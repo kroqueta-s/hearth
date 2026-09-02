@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Settings. **The real file is never committed**; .env.example is the authority.
+.env
+.env.bak
+
+# **Internal documents: design notes, verification reports, this machine's setup.**
+# These are deliberately not tracked. They are written in the author's language
+# and carry the operator's environment and reasoning, which would mislead anyone
+# reading them as documentation. See the language rules in CLAUDE.md.
+docs/local/
+
+# Editor
+*.code-workspace
+
+# Results and working files
+output/
+runs/
+*.stl
+*.glb
+*.obj
+*.ply

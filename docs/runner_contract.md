@@ -1,0 +1,182 @@
+# The runner contract
+
+**This document is the specification.** A runner that follows it can be driven
+by hearth without hearth knowing anything about the model inside it, and
+**adding a fourth model becomes configuration rather than a patch**.
+
+If you are writing a runner, start from [`templates/runner/`](../templates/runner)
+— it implements everything below and passes `tests/test_template_runner.py`.
+
+---
+
+## 0. Why runners are separate processes
+
+**Because the models' dependencies genuinely conflict.** This is a constraint,
+not a preference:
+
+- different builds and versions of torch,
+- hand-built extensions that exist for one model and not another,
+- libraries pinned to incompatible versions by different upstreams.
+
+**One virtual environment per model.** hearth starts a runner as a child
+process, and **only one model is loaded at a time**, because there is one GPU.
+
+## 1. The wire
+
+One JSON object per line, UTF-8, over stdin and stdout.
+
+| # | Rule | Why |
+|---|---|---|
+| 1 | **One message is one line of JSON**, separated by `\n` | Lines are the framing, so newlines inside a message stay JSON-escaped |
+| 2 | **Nothing but the protocol may write to stdout** | Model code prints to stdout as a matter of course. A runner duplicates the real stdout at startup, hides it, and points `sys.stdout` at stderr |
+| 3 | **stderr is never parsed, but must be drained** | Left unread, the pipe fills and the runner stops |
+| 4 | **No bytes on the wire: pass absolute paths** | Both processes are on the same machine, so copying is waste |
+| 5 | **Requests are serial** | There is one GPU |
+
+## 2. Required methods
+
+| Method | Arguments | Returns | Notes |
+|---|---|---|---|
+| `capabilities` | — | §3 | **Answer without loading the model.** hearth calls it at startup |
+| `load` | — | `{"loaded": true, "elapsed_sec": float}` | Load the weights |
+| `unload` | — | `{"unloaded": bool, "vram_used_gb": float}` | **Give the VRAM back.** hearth calls it before switching models |
+| `image_to_mesh` | `image_path`, `out_dir`, plus §4 | §5 | **One image to a raw mesh.** Preprocessing is **the runner's job** |
+| `shutdown` | — | `{"bye": true}` | Exit |
+
+**Optional methods**, implemented only if `capabilities` declares them:
+`text_to_mesh`, `multi_image_to_mesh`, `texture_mesh`.
+
+## 3. What `capabilities` looks like
+
+**Capabilities are data. Nothing branches on a model's name.**
+
+```json
+{
+  "name": "hunyuan3d",
+  "version": "2.1",
+  "capabilities": {
+    "image_to_mesh": true,
+    "text_to_mesh": false,
+    "multi_image_to_mesh": false,
+    "texture": true,
+    "texture_mesh": true
+  },
+  "params": {
+    "steps": {"type": "int", "default": 30, "min": 1, "max": 200},
+    "octree_resolution": {"type": "int", "default": 384, "min": 64, "max": 768},
+    "guidance_scale": {"type": "float", "default": 5.0, "min": 0.0, "max": 20.0},
+    "seed": {"type": "int", "default": 0, "min": 0}
+  },
+  "notes": "Free text. Anything a caller should know that the fields cannot say."
+}
+```
+
+- **The moment a caller writes `if model == "..."`, this has failed.** Every new
+  model would then mean touching the caller. **Branch on the capability table
+  and the caller never changes.**
+- `params` declares the model's own settings. hearth does not interpret them; it
+  passes them through, and a user interface can build a form from this table.
+- **hearth does not validate `params`.** Only the runner knows what its values
+  mean, so checking them is the runner's job.
+
+## 4. `image_to_mesh` arguments
+
+| Argument | Required | Meaning |
+|---|:--:|---|
+| `image_path` | yes | **Absolute path** to the input image |
+| `out_dir` | yes | **Absolute path** to write results into. hearth makes one per run |
+| anything in `params` | no | The model's own settings. **An argument that was never declared is rejected with a reason** |
+
+**Preprocessing belongs to the runner.** Whether background removal is needed,
+and which method works, differs per model, and getting it wrong is a silent
+quality loss rather than an error. **hearth does no preprocessing at all.**
+
+## 5. `image_to_mesh` results
+
+```json
+{
+  "mesh_path": "C:/.../out/raw.ply",
+  "n_vertices": 637857,
+  "n_faces": 1275718,
+  "extra": {"foreground": "C:/.../out/foreground.png"},
+  "metrics": {"load_sec": 40.2, "gen_sec": 87.9, "vram_peak_gb": 14.18}
+}
+```
+
+- **`mesh_path` is a PLY.** glTF splits and reorders vertices, which breaks any
+  index the caller was given.
+- **Normalized scale is fine.** Scaling to real-world units is downstream work.
+- **Never use `metrics.gen_sec` as a pass/fail signal.** It varies by several
+  times for identical settings, and the first run on a machine can be an order
+  of magnitude slower while kernels are tuned.
+- `extra` holds whatever intermediate files the model produced. hearth passes it
+  through untouched.
+
+## 6. Failure
+
+| Type | Meaning |
+|---|---|
+| `FileNotFoundError` | An input, a weight file, or a repository is missing |
+| `ValueError` | An unknown argument, or a value out of range |
+| `RuntimeError` | Inference failed |
+| `OSError` | A dependency would not load (a blocked DLL arrives here) |
+
+**A runner never lets an exception escape.** One that dies leaves hearth waiting.
+When hearth notices a runner has died, it fails the outstanding request and
+attaches the tail of that runner's stderr.
+
+## 7. Registering a runner
+
+hearth learns about runners from `.env`. **No model is ever named in code.**
+
+```
+HEARTH_RUNNERS=hunyuan3d,trellis,hi3dgen
+HEARTH_RUNNER_HUNYUAN3D_PYTHON=C:\path\to\its\.venv\Scripts\python.exe
+HEARTH_RUNNER_HUNYUAN3D_MODULE=runners.hunyuan3d
+HEARTH_RUNNER_HUNYUAN3D_CWD=C:\path\to\hunyuan3d-strix-halo
+```
+
+`install.ps1 -Runner <name>=<path>` and `tools/add_runner.ps1` write these
+entries for you.
+
+**`CWD` and `MODULE` are separate so that a runner can live in its own
+repository.** Point `CWD` at the clone and nothing else changes; the runner
+reads its own `.env` from there for the paths to its weights.
+
+## 8. Progress
+
+**Report what you counted. Never report an estimate.**
+
+A runner may send `progress` for the request it is handling, as often as it
+likes:
+
+```json
+{"id": 1, "event": "progress", "stage": "texture", "message": "multi-view denoising",
+ "step": 7, "total": 15}
+```
+
+| Field | Required | Meaning |
+|---|:--:|---|
+| `stage` | yes | The stage's name. **An identifier for machines**, so keep it stable |
+| `message` | yes | Free text for a person |
+| `step` | no | The **counted** step, from 1. Only when it is counted |
+| `total` | no | How many steps there are. **Only when the length is known** |
+
+**Three rules.**
+
+1. **No percentage without a `total`.** With only `step`, say "step 7". A
+   receiver must not invent a denominator.
+2. **Never send an ETA or an overall percentage.** The first run of a loop can
+   be an order of magnitude slower than every run after it, so a prediction
+   built from a stored constant is worst exactly when it is most wanted.
+3. **Always send the first and last step.** Thin out the middle if the loop is
+   fast, but never the two that say it started and finished.
+
+`heartbeat` is a `progress` with no `step`. **It proves the runner is alive and
+says nothing about how far along it is**, so it does not replace a count.
+
+**Get the count from upstream rather than keeping your own.** For a diffusers
+pipeline, the scheduler's `set_timesteps` fixes the total and its `step`
+advances the count; for a hand-written loop, replace the `tqdm` in the module
+that holds it. Both work without modifying the model's code, which matters
+because that code gets replaced wholesale on the next update.

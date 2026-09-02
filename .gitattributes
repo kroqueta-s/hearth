@@ -1,0 +1,12 @@
+# Text is detected automatically and normalised to LF in the repository.
+* text=auto eol=lf
+
+# .ps1 is read by Windows tools, so it keeps CRLF (and is written without a BOM).
+*.ps1 text eol=crlf
+
+# Treated as binary: no diffs are taken for these.
+*.png binary
+*.jpg binary
+*.stl binary
+*.ply binary
+*.glb binary

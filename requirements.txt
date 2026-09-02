@@ -1,0 +1,17 @@
+# hearth's dependencies. **There is no torch here, and there never will be.**
+#
+# hearth starts model runners; it does not run models. Each runner has its own
+# virtual environment precisely because their dependencies conflict, and pulling
+# any of that in here would put hearth back in the middle of those conflicts.
+# `tests/test_config.py` fails the build if hearth ever imports torch.
+#
+# Versions are the ones this was verified with on 2026-09-02.
+
+# Talking to ComfyUI over HTTP. Only used by the image routes.
+httpx==0.28.1
+
+# Resizing an input image before it is sent for generation.
+pillow==12.3.0
+
+# Reading .env, which is the authority on which runners and models exist.
+python-dotenv==1.2.3

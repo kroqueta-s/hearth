@@ -1,0 +1,20 @@
+[project]
+name = "hearth"
+version = "0.1.0"
+description = "Run several local image-to-3D models behind one interface, one at a time."
+requires-python = ">=3.12"
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# The template is a file to copy, not a module of this package. It is checked by
+# tests/test_template_runner.py, which runs it for real.
+extend-exclude = ["templates"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "ANN"]
+ignore = ["ANN401"]

@@ -1,0 +1,22 @@
+name: test
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    # hearth has no GPU dependency at all, so everything except the
+    # model-switching test runs here exactly as it does on a real machine.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m compileall hearth tools tests templates
+      # The rules that keep hearth a relay: no torch, no bpy, no model named in
+      # code. There is no .env in CI, so that comparison skips itself.
+      - run: python tests/test_config.py
+      # **The template is started and talked to for real**, so it cannot drift
+      # away from the contract unnoticed.
+      - run: python tests/test_template_runner.py
