@@ -23,6 +23,109 @@ from . import config
 from .comfy import ComfyUIClient
 
 
+# --- What the image side can do, **as data** ----------------------------------
+#
+# The mesh side answers this from the runner (`docs/runner_contract.md` §3), and
+# a caller builds its form from the table rather than from a list it wrote by
+# hand. **The image side answers in the same shape**, so one piece of code in the
+# caller serves both. Adding a setting here is what makes it appear in a user
+# interface; there is no second list to keep in step.
+
+# The route each declared workflow serves. **The key on the left is the method a
+# caller calls**; the one on the right is the entry in `.env`.
+ROUTES: dict[str, str] = {
+    "text_to_image": "txt2img",
+    "image_to_image": "img2img",
+    "sketch_to_image": "controlnet",
+}
+
+# Accepted by every image route.
+COMMON_PARAMS: dict[str, dict[str, Any]] = {
+    "prompt": {"type": "str", "default": ""},
+    "negative": {"type": "str", "default": ""},
+    "image_seed": {"type": "int", "default": 0, "min": 0},
+    "image_steps": {"type": "int", "default": 25, "min": 1, "max": 200},
+}
+
+# Accepted by one route only.
+ROUTE_PARAMS: dict[str, dict[str, dict[str, Any]]] = {
+    "text_to_image": {
+        "width": {"type": "int", "default": 1024, "min": 256, "max": 2048},
+        "height": {"type": "int", "default": 1024, "min": 256, "max": 2048},
+    },
+    # Lower stays closer to the original.
+    "image_to_image": {"denoise": {"type": "float", "default": 0.6, "min": 0.0, "max": 1.0}},
+    # Higher follows the sketch more closely.
+    "sketch_to_image": {"strength": {"type": "float", "default": 0.8, "min": 0.0, "max": 2.0}},
+}
+
+
+def capabilities(name: str) -> dict[str, Any]:
+    """What one image model can do, in the shape a runner answers in.
+
+    Args:
+        name: An image model listed in `HEARTH_IMAGE_MODELS`.
+
+    Returns:
+        `name` / `capabilities` / `params` / `route_params`, as in
+        `docs/runner_contract.md` §3.
+
+    Raises:
+        ValueError: If the model was never declared.
+    """
+    spec = config.image_model_spec(name)
+    able = {method: bool(spec[route]) for method, route in ROUTES.items()}
+    # **A ControlNet workflow with no ControlNet weights cannot run.** Saying so
+    # here keeps a caller from offering a route that fails on use.
+    if able["sketch_to_image"] and not config.CONTROLNET_MODEL:
+        able["sketch_to_image"] = False
+    return {
+        "name": name,
+        "checkpoint": spec["checkpoint"],
+        "capabilities": able,
+        "params": dict(COMMON_PARAMS),
+        "route_params": {k: dict(v) for k, v in ROUTE_PARAMS.items() if able.get(k)},
+    }
+
+
+def all_capabilities() -> dict[str, dict[str, Any]]:
+    """Every declared image model. **Failures carry their reason.**"""
+    out: dict[str, dict[str, Any]] = {}
+    for name in config.image_model_names():
+        try:
+            out[name] = capabilities(name)
+        except ValueError as exc:
+            out[name] = {"name": name, "error": str(exc)}
+    return out
+
+
+def effective_params(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Fill the declared defaults in, and **reject what was never declared**.
+
+    Returning the values that were actually used is what lets a caller offer
+    "again, with one thing changed" (`docs/runner_contract.md` §5). Rejecting the
+    rest is what keeps a misspelled setting from running silently at its default.
+
+    Args:
+        method: One of `ROUTES`.
+        params: What the caller sent, minus what hearth consumes itself.
+
+    Returns:
+        Every declared parameter with the value that will be used.
+
+    Raises:
+        ValueError: If a parameter was never declared for this route.
+    """
+    declared = {**COMMON_PARAMS, **ROUTE_PARAMS.get(method, {})}
+    unknown = set(params) - set(declared)
+    if unknown:
+        raise ValueError(
+            f"unknown parameters for {method}: {sorted(unknown)} "
+            f"(accepted: {sorted(declared)})"
+        )
+    return {key: params.get(key, spec["default"]) for key, spec in declared.items()}
+
+
 def apply_overrides(
     workflow: dict[str, Any], overrides: list[tuple[str, str, Any]]
 ) -> dict[str, Any]:
@@ -110,13 +213,16 @@ def require_alive(client: ComfyUIClient) -> None:
         )
 
 
-def _run(client: ComfyUIClient, prompt_id: str, out_dir: Path) -> list[Path]:
+def _run(
+    client: ComfyUIClient, prompt_id: str, out_dir: Path, relay: Any | None = None
+) -> list[Path]:
     """Wait for a submitted workflow and save the images it produced into out_dir.
 
     Args:
         client: The ComfyUI client.
         prompt_id: What `queue_prompt` returned.
         out_dir: Where to save.
+        relay: Where heartbeats go while ComfyUI works.
 
     Returns:
         The saved paths, in the order they were produced.
@@ -124,7 +230,7 @@ def _run(client: ComfyUIClient, prompt_id: str, out_dir: Path) -> list[Path]:
     Raises:
         RuntimeError: If no image came out at all.
     """
-    entry = client.wait_for(prompt_id, timeout_sec=float(config.COMFY_TIMEOUT_SEC))
+    entry = client.wait_for(prompt_id, timeout_sec=float(config.COMFY_TIMEOUT_SEC), relay=relay)
     out_dir.mkdir(parents=True, exist_ok=True)
     saved: list[Path] = []
     for out in client.collect_outputs(entry):
@@ -176,6 +282,7 @@ def text_to_image(
     width: int = 1024,
     height: int = 1024,
     image_model: str | None = None,
+    relay: Any | None = None,
 ) -> Path:
     """Generate one image from a text prompt, save it, and return its path."""
     spec, workflow = _spec(image_model, "txt2img")
@@ -191,7 +298,7 @@ def text_to_image(
             ("5", "height", height),
         ],
     )
-    return _run(client, client.queue_prompt(wf), out_dir)[0]
+    return _run(client, client.queue_prompt(wf), out_dir, relay)[0]
 
 
 def sketch_to_image(
@@ -206,6 +313,7 @@ def sketch_to_image(
     strength: float = 0.8,
     max_dim: int = 1024,
     image_model: str | None = None,
+    relay: Any | None = None,
 ) -> Path:
     """Generate one image from a sketch plus a prompt, save it, and return its path."""
     spec, workflow = _spec(image_model, "controlnet")
@@ -226,7 +334,7 @@ def sketch_to_image(
             ("13", "strength", strength),
         ],
     )
-    return _run(client, client.queue_prompt(wf), out_dir)[0]
+    return _run(client, client.queue_prompt(wf), out_dir, relay)[0]
 
 
 def image_to_image(
@@ -241,6 +349,7 @@ def image_to_image(
     denoise: float = 0.6,
     max_dim: int = 1024,
     image_model: str | None = None,
+    relay: Any | None = None,
 ) -> Path:
     """Generate one image from an input image plus a prompt, save it, and return its path."""
     spec, workflow = _spec(image_model, "img2img")
@@ -258,7 +367,7 @@ def image_to_image(
             ("3", "denoise", denoise),
         ],
     )
-    return _run(client, client.queue_prompt(wf), out_dir)[0]
+    return _run(client, client.queue_prompt(wf), out_dir, relay)[0]
 
 
 def _stage_input(src: Path, out_dir: Path, name: str, max_dim: int) -> tuple[int, int, Path]:

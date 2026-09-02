@@ -28,6 +28,13 @@ def _int(key: str, default: int) -> int:
     return int(raw) if raw is not None and raw.strip() != "" else default
 
 
+def _bool(key: str, default: bool) -> bool:
+    raw = os.getenv(key)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def _path(key: str, default: str = "") -> Path:
     return Path(_str(key, default))
 
@@ -48,11 +55,30 @@ CONTROLNET_MODEL: str = _str("HEARTH_CONTROLNET_MODEL")
 _wf_raw = _str("HEARTH_WORKFLOW_DIR", "hearth/workflows")
 WORKFLOW_DIR: Path = Path(_wf_raw) if Path(_wf_raw).is_absolute() else REPO_ROOT / _wf_raw
 
+# **Free the GPU before generating an image.** ComfyUI and a 3D runner share one
+# card, and a 3D model left resident does not leave room for an image model.
+# Going over does not fail: it falls back to shared memory and becomes several
+# times slower **without saying anything**, which is why this defaults to on.
+# The cost of it being on is a reload of the 3D model afterwards, which is a
+# number you can measure; the cost of it being off is a silent one.
+FREE_MESH_BEFORE_IMAGE: bool = _bool("HEARTH_FREE_MESH_BEFORE_IMAGE", True)
+
 # --- Keeping the GPU to ourselves --------------------------------------------
-# A port that, when something is listening on it, means another process already
-# holds the GPU. **Only one thing can have the VRAM**, so hearth refuses to load
-# a runner rather than letting both fight over it. Zero disables the check.
+# A port that, when something is listening on it, means **another application**
+# already holds the GPU. **Only one thing can have the VRAM**, so hearth refuses
+# to load a runner rather than letting both fight over it. Zero disables it.
 GPU_BUSY_PORT: int = _int("HEARTH_GPU_BUSY_PORT", 0)
+
+# A port hearth listens on **itself** while a model is loaded, so that a second
+# hearth (a second Blender window, or a command line next to a running one)
+# discovers the first instead of quietly loading a second model into the same
+# card. **It must not be the port above**: that one belongs to another
+# application. Zero disables it, at the cost of nothing detecting that case.
+LOCK_PORT: int = _int("HEARTH_LOCK_PORT", 0)
+
+# The version of `docs/protocol.md` this hearth speaks. **A constant, not
+# configuration**: it describes the code, so it is not something to set in .env.
+PROTOCOL_VERSION: int = 1
 
 
 def image_model_names() -> list[str]:

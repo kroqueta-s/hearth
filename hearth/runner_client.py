@@ -59,6 +59,9 @@ class RunnerProcess:
         self._proc: subprocess.Popen[str] | None = None
         self._stderr: deque[str] = deque(maxlen=400)
         self._next_id = 1
+        # **One conversation at a time with this process.** A `warm` running on
+        # another thread must not interleave its lines with a `load`.
+        self._call_lock = threading.Lock()
 
     def is_running(self) -> bool:
         """Whether the process is alive."""
@@ -115,6 +118,20 @@ class RunnerProcess:
         except (OSError, ValueError, subprocess.TimeoutExpired):
             proc.kill()
 
+    def kill(self) -> None:
+        """End the process now, without asking it to stop.
+
+        **This is how a generation is cancelled** (`docs/runner_contract.md`
+        §10): a torch loop does not check for anything, so ending the process is
+        the only thing that stops it and the only thing that reliably returns the
+        VRAM. A `call` waiting on this process fails as soon as its stdout
+        closes.
+        """
+        proc = self._proc
+        if proc is None or proc.poll() is not None:
+            return
+        proc.kill()
+
     def call(
         self, method: str, params: dict[str, Any] | None = None, *, relay: Relay | None = None
     ) -> dict[str, Any]:
@@ -132,6 +149,15 @@ class RunnerProcess:
             RunnerError: If the runner is not running, died partway, or answered
                 with an error.
         """
+        # **Serialised per process.** `warm` runs on its own thread and may
+        # target a runner someone else is talking to.
+        with self._call_lock:
+            return self._converse(method, params, relay)
+
+    def _converse(
+        self, method: str, params: dict[str, Any] | None, relay: Relay | None
+    ) -> dict[str, Any]:
+        """Send one request and read until this runner answers it."""
         if not self.is_running() or self._proc is None or self._proc.stdin is None:
             raise RunnerError(f"{self.name}: the runner is not running")
         assert self._proc.stdout is not None

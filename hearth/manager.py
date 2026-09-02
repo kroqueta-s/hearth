@@ -5,6 +5,11 @@
 **unloading before loading**; overlapping the two goes past the VRAM the card
 actually has.
 
+**Two threads reach this class** (`docs/protocol.md` §2): the one draining the
+GPU queue, and the one answering control methods. Everything that touches the
+state below takes `_lock`, and the sections that hold it are short - **a load is
+not performed under the lock**, or a `status` during a load would wait for it.
+
 hearth does not interpret a runner's `params`. **Only the runner knows what its
 own values mean**, so validation is left to it and the arguments pass straight
 through (`docs/runner_contract.md` §3).
@@ -13,6 +18,7 @@ through (`docs/runner_contract.md` §3).
 from __future__ import annotations
 
 import socket
+import threading
 import time
 from typing import Any
 
@@ -22,6 +28,10 @@ from .runner_client import Relay, RunnerError, RunnerProcess
 
 class GpuBusyError(RuntimeError):
     """Another process already holds the GPU, so no runner can be loaded."""
+
+
+class CanceledError(RuntimeError):
+    """The request was cancelled by the caller (`docs/runner_contract.md` §10)."""
 
 
 def assert_gpu_free() -> None:
@@ -57,17 +67,33 @@ class Manager:
         self._runners: dict[str, RunnerProcess] = {}
         self._capabilities: dict[str, dict[str, Any]] = {}
         self._loaded: str | None = None
+        self._busy: str | None = None
+        self._canceling = False
+        self._lock = threading.RLock()
+        self._gpu_claim: socket.socket | None = None
 
     # --- Inventory and capabilities -----------------------------------------
     def available(self) -> list[str]:
         """The runners declared in `.env`."""
         return config.runner_names()
 
+    def known_capabilities(self) -> dict[str, dict[str, Any]]:
+        """The capability tables already asked for. **This starts nothing.**
+
+        `status` uses this: asking every runner at startup costs starting every
+        runner's python, and that is felt when a window is opening
+        (`docs/protocol.md` §4).
+        """
+        with self._lock:
+            return dict(self._capabilities)
+
     def capabilities(self, name: str) -> dict[str, Any]:
         """Return a runner's capabilities (**without loading its weights**).
 
         The answer is remembered. Answering `capabilities` without loading a
-        model is part of the contract, so asking is cheap.
+        model is part of the contract, so asking is cheap - but it does start
+        that runner's process, so it is asked for on demand rather than for
+        everything at once.
 
         Args:
             name: The runner's name.
@@ -78,8 +104,9 @@ class Manager:
         Raises:
             RunnerError: If the runner is unknown or would not start.
         """
-        if name in self._capabilities:
-            return self._capabilities[name]
+        with self._lock:
+            if name in self._capabilities:
+                return self._capabilities[name]
         runner = self._runner(name)
         started_here = not runner.is_running()
         runner.start()
@@ -87,9 +114,12 @@ class Manager:
             caps = runner.call("capabilities")
         finally:
             # If it was only started to ask, put it back down.
-            if started_here and self._loaded != name:
+            with self._lock:
+                spare = started_here and self._loaded != name and self._busy != name
+            if spare:
                 runner.stop()
-        self._capabilities[name] = caps
+        with self._lock:
+            self._capabilities[name] = caps
         return caps
 
     def all_capabilities(self) -> dict[str, dict[str, Any]]:
@@ -105,7 +135,14 @@ class Manager:
     # --- Loading and switching ----------------------------------------------
     def loaded(self) -> str | None:
         """The runner whose weights are loaded, or None."""
-        return self._loaded
+        with self._lock:
+            self._forget_dead()
+            return self._loaded
+
+    def busy(self) -> str | None:
+        """The runner that is generating right now, or None."""
+        with self._lock:
+            return self._busy
 
     def load(self, name: str, relay: Relay | None = None) -> dict[str, Any]:
         """Switch to a runner and load its weights.
@@ -121,23 +158,46 @@ class Manager:
             The runner's `load` result plus `loaded` (the name).
 
         Raises:
-            GpuBusyError: If another process holds the GPU.
+            GpuBusyError: If another process, or another hearth, holds the GPU.
+            CanceledError: If the caller cancelled while it was loading.
             RunnerError: If the runner is unknown or loading failed.
         """
         assert_gpu_free()
-        if self._loaded == name:
-            return {"loaded": name, "elapsed_sec": 0.0, "already": True}
-        if self._loaded is not None:
+        with self._lock:
+            self._forget_dead()
+            if self._loaded == name:
+                return {"loaded": name, "elapsed_sec": 0.0, "already": True}
+            current = self._loaded
+        if current is not None:
             if relay is not None:
-                relay("unload", f"unloading {self._loaded} to free the VRAM")
+                relay("unload", f"unloading {current} to free the VRAM")
             self.unload(relay=relay)
 
         runner = self._runner(name)
         spawn_started = time.perf_counter()
         runner.start()
         spawn_sec = time.perf_counter() - spawn_started
-        result = runner.call("load", relay=relay)
-        self._loaded = name
+        self._claim_gpu()
+        # **A load is cancellable too.** It takes tens of seconds, and inside a
+        # flow of several steps that is a real part of the wait; a cancel that
+        # answered "nothing is generating" for all of it would be useless
+        # exactly when someone is waiting.
+        self._begin(name)
+        try:
+            result = runner.call("load", relay=relay)
+        except RunnerError:
+            self._release_gpu()
+            canceled = self._canceled_instead(f"loading {name}")
+            if canceled is not None:
+                raise canceled from None
+            raise
+        except BaseException:
+            self._release_gpu()
+            raise
+        finally:
+            self._end()
+        with self._lock:
+            self._loaded = name
         # **Starting and loading are reported separately.** Without knowing
         # which of the two is the expensive one, there is nothing to act on.
         return {"loaded": name, "spawn_sec": round(spawn_sec, 2), **result}
@@ -149,12 +209,15 @@ class Manager:
         and there is no reliable way to make torch's allocator give the VRAM
         back.
         """
-        name = self._loaded
-        self._loaded = None
+        with self._lock:
+            name = self._loaded
+            self._loaded = None
         if name is None:
+            self._release_gpu()
             return {"unloaded": False}
         runner = self._runners.get(name)
         if runner is None:
+            self._release_gpu()
             return {"unloaded": False}
         # **Keep what the runner reports.** `vram_used_gb` is the only number
         # that shows whether a switch actually returned the memory, and hearth
@@ -166,12 +229,53 @@ class Manager:
             pass  # It is about to be ended anyway, so a failure here costs nothing.
         stop_started = time.perf_counter()
         runner.stop()
+        self._release_gpu()
         return {
             "unloaded": True,
             "was": name,
             "vram_used_gb": reported.get("vram_used_gb"),
             "stop_sec": round(time.perf_counter() - stop_started, 2),
         }
+
+    # --- Getting ready for what comes next -----------------------------------
+    def warm(self, name: str) -> dict[str, Any]:
+        """Get a runner ready **while another one is generating**.
+
+        Its process is started and, if it declares `warm`, it is told to read its
+        weights off disk. **Nothing here touches the GPU**
+        (`docs/runner_contract.md` §9), which is the only reason it is allowed
+        to run next to a generation.
+
+        **This never raises.** A warm that failed is a warm that did not happen,
+        and the caller is in the middle of something else.
+
+        Args:
+            name: The runner to get ready.
+
+        Returns:
+            `warmed`, and `why` when it did not happen.
+        """
+        try:
+            with self._lock:
+                if self._loaded == name:
+                    return {"warmed": False, "model": name, "why": "already loaded"}
+            caps = self.capabilities(name)
+            if not caps.get("capabilities", {}).get("warm", False):
+                # **Its process is up, which is a part of the load already
+                # paid.** The rest needs the runner's cooperation.
+                return {"warmed": False, "model": name, "why": "the runner does not declare warm"}
+            runner = self._runner(name)
+            runner.start()
+            started = time.perf_counter()
+            result = runner.call("warm") or {}
+            return {
+                "warmed": bool(result.get("warmed", True)),
+                "model": name,
+                "elapsed_sec": round(time.perf_counter() - started, 2),
+                **{k: v for k, v in result.items() if k != "warmed"},
+            }
+        except (RunnerError, OSError, ValueError) as exc:
+            return {"warmed": False, "model": name, "why": str(exc)}
 
     # --- Generating ----------------------------------------------------------
     def generate(
@@ -189,17 +293,84 @@ class Manager:
             The runner's result plus `model` (the runner that produced it).
 
         Raises:
-            RunnerError: If the runner does not support the method.
+            CanceledError: If the caller cancelled it.
+            RunnerError: If the runner does not support the method, or failed.
         """
         caps = self.capabilities(name).get("capabilities", {})
         if not caps.get(method, False):
             raise RunnerError(f"{name} does not support {method} (check its capabilities)")
-        if self._loaded != name:
+        with self._lock:
+            self._forget_dead()
+            needs_load = self._loaded != name
+        if needs_load:
             self.load(name, relay=relay)
-        result = self._runners[name].call(method, params, relay=relay)
+        self._begin(name)
+        try:
+            result = self._runners[name].call(method, params, relay=relay)
+        except RunnerError:
+            canceled = self._canceled_instead(f"{method} on {name}")
+            if canceled is not None:
+                raise canceled from None
+            raise
+        finally:
+            self._end()
         return {"model": name, **result}
 
+    def cancel(self) -> dict[str, Any]:
+        """End whatever is generating right now, by ending its process.
+
+        **There is no gentler way** (`docs/runner_contract.md` §10). The price is
+        that the weights go with it and the next generation pays a full load.
+
+        Returns:
+            Whether anything was cancelled, and what it was.
+        """
+        with self._lock:
+            name = self._busy
+            if name is None:
+                return {"canceled": False, "why": "nothing is generating"}
+            self._canceling = True
+            runner = self._runners.get(name)
+        if runner is None:
+            return {"canceled": False, "why": "nothing is generating"}
+        runner.kill()
+        return {"canceled": True, "was": name}
+
     # --- Internals -----------------------------------------------------------
+    def _begin(self, name: str) -> None:
+        """Mark a runner as the one holding the GPU, and therefore cancellable."""
+        with self._lock:
+            self._busy = name
+            self._canceling = False
+
+    def _end(self) -> None:
+        """It is no longer holding the GPU."""
+        with self._lock:
+            self._busy = None
+            self._canceling = False
+
+    def _canceled_instead(self, what: str) -> CanceledError | None:
+        """Was this runner's death a cancellation we asked for?
+
+        **A cancel ends the process** (`docs/runner_contract.md` §10), so it
+        reaches the caller as the runner having died. Telling the two apart is
+        the difference between an error a person should read and one they asked
+        for.
+
+        Args:
+            what: What was interrupted, for the message.
+
+        Returns:
+            The error to raise instead, or None when the runner died on its own
+            and the original failure is the true one.
+        """
+        with self._lock:
+            canceled = self._canceling
+        if not canceled:
+            return None
+        self._forget_dead()
+        return CanceledError(f"{what} was cancelled")
+
     def _runner(self, name: str) -> RunnerProcess:
         """Return a runner, creating it if this is the first time.
 
@@ -207,15 +378,66 @@ class Manager:
             RunnerError: If `.env` never declared the name.
         """
         if name not in self.available():
-            raise RunnerError(
-                f"unknown runner: {name} (HEARTH_RUNNERS lists {self.available()})"
-            )
-        if name not in self._runners:
-            self._runners[name] = RunnerProcess(name, config.runner_spec(name))
-        return self._runners[name]
+            raise RunnerError(f"unknown runner: {name} (HEARTH_RUNNERS lists {self.available()})")
+        with self._lock:
+            if name not in self._runners:
+                self._runners[name] = RunnerProcess(name, config.runner_spec(name))
+            return self._runners[name]
+
+    def _forget_dead(self) -> None:
+        """Drop the memory of a loaded model whose process is no longer there.
+
+        **A runner can die mid-generation**, and without this the name stays in
+        `_loaded` forever: the next request for that model skips the load it
+        needs and fails against a process that is gone, over and over. Call it
+        under the lock.
+        """
+        name = self._loaded
+        if name is None:
+            return
+        runner = self._runners.get(name)
+        if runner is None or not runner.is_running():
+            self._loaded = None
+            self._release_gpu()
+
+    def _claim_gpu(self) -> None:
+        """Listen on the lock port for as long as a model is loaded.
+
+        **This is how two hearths find each other**: a second Blender window, or
+        a command line run next to a running one, would otherwise load a second
+        model into the same card and both would crawl. Disabled when
+        `HEARTH_LOCK_PORT` is 0.
+
+        Raises:
+            GpuBusyError: If another hearth already holds it.
+        """
+        port = config.LOCK_PORT
+        if port <= 0 or self._gpu_claim is not None:
+            return
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            # **No SO_REUSEADDR.** On Windows it lets a second bind succeed,
+            # which is the one thing this must not do.
+            sock.bind(("127.0.0.1", port))
+            sock.listen(1)
+        except OSError as exc:
+            sock.close()
+            raise GpuBusyError(
+                f"another hearth already holds the GPU (port {port} is taken). "
+                "Use the one that is running, or stop it first."
+            ) from exc
+        self._gpu_claim = sock
+
+    def _release_gpu(self) -> None:
+        """Stop holding the lock port."""
+        sock = self._gpu_claim
+        self._gpu_claim = None
+        if sock is not None:
+            sock.close()
 
     def shutdown(self) -> None:
         """End every runner."""
         self.unload()
         for runner in self._runners.values():
             runner.stop()
+        self._release_gpu()

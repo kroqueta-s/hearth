@@ -22,12 +22,16 @@ or `error`**::
 
 1. **Nothing else may write to the protocol's stdout.** Model dependencies print
    to stdout as a matter of course - version banners, notices, progress an
-   author wanted a human to see - and a single such line breaks the protocol. `install_stdout_guard()` duplicates the
-   real stdout, hides it, and points `sys.stdout` at stderr. **Call it first.**
+   author wanted a human to see - and a single such line breaks the protocol.
+   `install_stdout_guard()` duplicates the real stdout, hides it, and points
+   `sys.stdout` at stderr. **Call it first.**
 2. **stderr is never parsed.** It is for people and for logs, and it is what
    gets read back after a crash.
-3. **Requests are handled strictly one at a time.** There is one GPU.
-4. **There is no cancellation.** A running job runs to the end.
+3. **Work that needs the GPU is handled strictly one at a time.** There is one
+   GPU. **Control methods are answered while it runs** (`docs/protocol.md` §2),
+   so replies interleave and **a caller matches them by `id`, not by order**.
+4. **Every line is written under one lock.** Two threads answer through this
+   module, and half a line from each is not JSON.
 5. **No bytes on the wire.** Images and meshes are passed as **absolute paths**.
 """
 
@@ -36,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, TextIO
@@ -71,6 +76,30 @@ def install_stdout_guard() -> TextIO:
     return protocol
 
 
+class Channel:
+    """The one stream every reply goes out on, and the lock that keeps it whole.
+
+    **Two threads write here**: the one draining the GPU queue and the one
+    answering control methods (`docs/protocol.md` §2). Interleaved lines are the
+    failure this exists to prevent.
+    """
+
+    def __init__(self, out: TextIO) -> None:
+        self._out = out
+        self._lock = threading.Lock()
+
+    def responder(self, request_id: int) -> Responder:
+        """Return the answering end for one request."""
+        return Responder(self, request_id)
+
+    def write(self, payload: dict[str, Any]) -> None:
+        """Write one protocol line. **Flushed**, because a caller is waiting."""
+        line = json.dumps(payload, ensure_ascii=False)
+        with self._lock:
+            self._out.write(line + "\n")
+            self._out.flush()
+
+
 class Responder:
     """Writes the replies to one request.
 
@@ -78,17 +107,15 @@ class Responder:
     caller cannot distinguish from a hang.
     """
 
-    def __init__(self, out: TextIO, request_id: int) -> None:
-        self._out = out
+    def __init__(self, channel: Channel, request_id: int) -> None:
+        self._channel = channel
         self._id = request_id
         self._closed = False
 
     def _emit(self, payload: dict[str, Any]) -> None:
         if self._closed:
             raise RuntimeError("this request is already answered (result/error happens once)")
-        line = json.dumps({"id": self._id, **payload}, ensure_ascii=False)
-        self._out.write(line + "\n")
-        self._out.flush()
+        self._channel.write({"id": self._id, **payload})
 
     def progress(
         self,

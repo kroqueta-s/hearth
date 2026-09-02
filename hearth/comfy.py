@@ -111,10 +111,38 @@ class ComfyUIClient:
         r.raise_for_status()
         return r.json()["prompt_id"]
 
-    def wait_for(self, prompt_id: str, timeout_sec: float, poll_sec: float = 1.5) -> dict[str, Any]:
-        """Poll until the prompt_id appears in the history, and return that entry."""
+    def wait_for(
+        self,
+        prompt_id: str,
+        timeout_sec: float,
+        poll_sec: float = 1.5,
+        relay: Any | None = None,
+        heartbeat_sec: float = 5.0,
+    ) -> dict[str, Any]:
+        """Poll until the prompt_id appears in the history, and return that entry.
+
+        **The progress relayed from here is a heartbeat and nothing more.** It
+        proves the image is still being worked on; it says nothing about how far
+        along it is, because this route has no count to report - ComfyUI's
+        history says "finished" or "not yet", and **inventing a fraction from
+        elapsed time is exactly the estimate the contract forbids**
+        (`docs/runner_contract.md` §8). A per-step count needs ComfyUI's
+        WebSocket, which is a dependency this has not taken.
+
+        Args:
+            prompt_id: What `queue_prompt` returned.
+            timeout_sec: When to give up.
+            poll_sec: How often to ask.
+            relay: Where heartbeats go. `(stage, message)`.
+            heartbeat_sec: How often to send one.
+        """
         deadline = time.monotonic() + timeout_sec
+        started = time.monotonic()
+        last_beat = started
         while time.monotonic() < deadline:
+            if relay is not None and time.monotonic() - last_beat >= heartbeat_sec:
+                last_beat = time.monotonic()
+                relay("image", f"ComfyUI is working ({int(last_beat - started)}s elapsed)")
             r = httpx.get(self._url(f"history/{prompt_id}"), timeout=self.timeout_sec)
             r.raise_for_status()
             entry = r.json().get(prompt_id)

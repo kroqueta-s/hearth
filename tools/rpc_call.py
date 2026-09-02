@@ -1,33 +1,54 @@
 # SPDX-License-Identifier: MIT
-"""Send one request to hearth from the command line.
+"""Talk to hearth from the command line.
 
 **This is the first tool to reach for when a generation fails**: it tells apart
 a problem in the caller, in hearth, and in a runner, by cutting the caller out.
 
-    .venv\\Scripts\\python.exe tools\\rpc_call.py ping
+One request::
+
     .venv\\Scripts\\python.exe tools\\rpc_call.py status
     .venv\\Scripts\\python.exe tools\\rpc_call.py image_to_mesh --params-file args.json
+
+**Several requests down one process**, which is the only way the loaded model
+survives between them - starting hearth again throws the model away and pays the
+load a second time::
+
+    .venv\\Scripts\\python.exe tools\\rpc_call.py --flow flow.json
+    .venv\\Scripts\\python.exe tools\\rpc_call.py --interactive
+
+A flow file is a list of steps, and **each step's output is handed to the next**
+(the image that came out becomes the image that goes in)::
+
+    [{"method": "text_to_image", "params": {"prompt": "a small brass key"}},
+     {"method": "image_to_mesh", "params": {"model": "trellis"}}]
+
+In `--interactive`, each line is a method name and optionally its JSON
+arguments; a blank line or EOF ends it::
+
+    status
+    load {"model": "trellis"}
 
 **Do not pass JSON to `--params` from PowerShell.** It strips the double quotes
 on the way to a native executable and the result is a `JSONDecodeError`.
 **Use `--params-file`.**
 
-Progress is drawn as it arrives, and the final result or error is printed as
-JSON. The exit code is 0 on success and 2 on failure.
+Progress is drawn as it arrives and the final result is printed as JSON. The
+exit code is 0 when everything succeeded and 2 when anything did not.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "client"))
 
+from hearth_client import Flow, Hearth, RequestFailed  # noqa: E402
 
 BAR_WIDTH = 24
 
@@ -50,16 +71,15 @@ class ProgressLine:
         self._tty = bool(getattr(stream, "isatty", lambda: False)())
         self._active = ""
         self._last_key: tuple[str, int] | None = None
+        self._started = time.perf_counter()
 
-    def update(
-        self,
-        elapsed: float,
-        stage: str,
-        message: str,
-        step: int | None,
-        total: int | None,
-    ) -> None:
+    def restart(self) -> None:
+        """Start the clock again, for the next step of a flow."""
+        self._started = time.perf_counter()
+
+    def update(self, stage: str, message: str, step: int | None, total: int | None) -> None:
         """Show one progress event."""
+        elapsed = time.perf_counter() - self._started
         if step is None:
             self.note(f"[{elapsed:7.1f}s] {stage}: {message}")
             return
@@ -114,82 +134,111 @@ class ProgressLine:
         self._last_key = None
 
 
-def main() -> int:
-    """Start hearth, send one request, and show what comes back."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("method", help="the method to call: ping, status, load, image_to_mesh, ...")
-    parser.add_argument(
-        "--params", default="{}", help="arguments as JSON (PowerShell strips the quotes)"
-    )
-    parser.add_argument("--params-file", default=None, help="a file holding the arguments (preferred)")
-    parser.add_argument("--python", default=sys.executable, help="the python that runs hearth")
-    args = parser.parse_args()
+def _show(printer: ProgressLine, label: str, payload: dict[str, Any]) -> None:
+    """Print one answer as JSON, under a label."""
+    printer.close()
+    print(f"{label}:", flush=True)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
-    proc = subprocess.Popen(
-        [args.python, "-m", "hearth"],
-        cwd=str(REPO_ROOT),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        bufsize=1,
-    )
-    assert proc.stdin is not None and proc.stdout is not None
 
-    # **`utf-8-sig`, not `utf-8`.** Windows PowerShell's
-    # `Set-Content -Encoding utf8` **always writes a BOM**, so an argument file
-    # written the obvious way dies with `Unexpected UTF-8 BOM`. Without a BOM,
-    # `utf-8-sig` reads exactly like `utf-8`.
+def _read_params(args: argparse.Namespace) -> dict[str, Any]:
+    """Read the arguments for a single request.
+
+    **`utf-8-sig`, not `utf-8`.** Windows PowerShell's `Set-Content -Encoding
+    utf8` **always writes a BOM**, so an argument file written the obvious way
+    dies with `Unexpected UTF-8 BOM`. Without a BOM, `utf-8-sig` reads exactly
+    like `utf-8`.
+    """
     raw = (
         Path(args.params_file).read_text(encoding="utf-8-sig")
         if args.params_file
         else args.params
     )
-    request = {"id": 1, "method": args.method, "params": json.loads(raw)}
-    printer = ProgressLine(sys.stdout)
-    started = time.perf_counter()
-    proc.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
-    proc.stdin.flush()
+    return dict(json.loads(raw))
 
-    exit_code = 2
-    for raw in proc.stdout:
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except ValueError:
-            printer.note(f"[non-protocol line] {line}")
-            continue
-        elapsed = time.perf_counter() - started
-        kind = event.get("event")
-        if kind == "progress":
-            printer.update(
-                elapsed,
-                str(event.get("stage", "")),
-                str(event.get("message", "")),
-                event.get("step"),
-                event.get("total"),
-            )
-        elif kind == "result":
-            printer.close()
-            print(f"[{elapsed:7.1f}s] result:", flush=True)
-            print(json.dumps(event["result"], ensure_ascii=False, indent=2))
-            exit_code = 0
-            break
-        elif kind == "error":
-            printer.close()
-            print(f"[{elapsed:7.1f}s] error: {json.dumps(event['error'], ensure_ascii=False)}")
-            break
 
-    proc.stdin.write(json.dumps({"id": 2, "method": "shutdown"}) + "\n")
-    proc.stdin.flush()
-    proc.stdin.close()
+def _one(hearth: Hearth, printer: ProgressLine, method: str, params: dict[str, Any]) -> int:
+    """Send one request and show what comes back."""
+    printer.restart()
     try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-    return exit_code
+        result = hearth.call(method, params, on_progress=printer.update)
+    except RequestFailed as exc:
+        _show(printer, "error", {"type": exc.type, "message": exc.message})
+        return 2
+    _show(printer, "result", result)
+    return 0
+
+
+def _flow(hearth: Hearth, printer: ProgressLine, path: Path) -> int:
+    """Run a list of steps down one process, feeding each into the next."""
+    steps = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(steps, list):
+        raise SystemExit("a flow file holds a list of steps")
+
+    def on_step(index: int, method: str, result: dict[str, Any]) -> None:
+        _show(printer, f"step {index + 1}/{len(steps)}  {method}", result)
+        printer.restart()
+
+    flow = Flow(hearth, steps)
+    try:
+        flow.run(on_progress=printer.update, on_step=on_step)
+    except RequestFailed as exc:
+        _show(printer, f"error in step {len(flow.results) + 1}",
+              {"type": exc.type, "message": exc.message})
+        return 2
+    return 0
+
+
+def _interactive(hearth: Hearth, printer: ProgressLine) -> int:
+    """Read `method {json}` lines and run them down one process."""
+    printer.note("one request per line: a method, then optional JSON. Blank line ends it.")
+    worst = 0
+    for raw in sys.stdin:
+        line = raw.lstrip("﻿").strip()
+        if not line:
+            break
+        method, _, rest = line.partition(" ")
+        try:
+            params = json.loads(rest) if rest.strip() else {}
+        except ValueError as exc:
+            printer.note(f"not JSON: {exc}")
+            worst = 2
+            continue
+        worst = max(worst, _one(hearth, printer, method, dict(params)))
+    return worst
+
+
+def main() -> int:
+    """Start hearth, send what was asked for, and show what comes back."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("method", nargs="?", help="the method to call: ping, status, ...")
+    parser.add_argument(
+        "--params", default="{}", help="arguments as JSON (PowerShell strips the quotes)"
+    )
+    parser.add_argument(
+        "--params-file", default=None, help="a file holding the arguments (preferred)"
+    )
+    parser.add_argument(
+        "--flow", default=None, help="a JSON file of steps to run down one hearth process"
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="read requests from stdin, keeping one hearth process for all of them",
+    )
+    parser.add_argument("--python", default=sys.executable, help="the python that runs hearth")
+    args = parser.parse_args()
+
+    if not args.method and not args.flow and not args.interactive:
+        parser.error("give a method, --flow, or --interactive")
+
+    printer = ProgressLine(sys.stdout)
+    with Hearth.start(args.python, REPO_ROOT) as hearth:
+        if args.flow:
+            return _flow(hearth, printer, Path(args.flow))
+        if args.interactive:
+            return _interactive(hearth, printer)
+        return _one(hearth, printer, args.method, _read_params(args))
 
 
 if __name__ == "__main__":

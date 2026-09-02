@@ -18,6 +18,10 @@ your application
       +-- child process -> model C runner   (its own venv, its own torch)
 ```
 
+**Writing that application is [`docs/protocol.md`](docs/protocol.md)**, and
+[`client/hearth_client.py`](client/hearth_client.py) is a working client in one
+file with no dependencies, meant to be copied into it.
+
 **hearth holds no torch and no model.** It is a few hundred kilobytes of python.
 Everything heavy is behind a process boundary, which is what lets models with
 incompatible dependencies coexist at all.
@@ -85,29 +89,61 @@ put the arguments in a file and pass it:
 **Do not pass JSON to `--params` from PowerShell**: it strips the double quotes
 on the way to a native executable.
 
+**Several requests down one hearth**, which is the only way the loaded model
+survives between them - starting hearth again throws it away and pays the load
+a second time:
+
+```powershell
+.venv\Scripts\python.exe tools\rpc_call.py --flow flow.json
+.venv\Scripts\python.exe tools\rpc_call.py --interactive
+```
+
+To check an installation - the settings, the ports, every runner, and the files
+the image side names - in one go:
+
+```powershell
+.venv\Scripts\python.exe tools\doctor.py
+```
+
 ## Methods
+
+**[`docs/protocol.md`](docs/protocol.md) is the specification**; this is the
+short version.
 
 | Method | Takes | Gives |
 |---|---|---|
-| `status` | — | What is installed, what is loaded, what each model can do |
+| `status` | — | What is installed, what is loaded, what the image side can do |
+| `capabilities` | `model` | What one model can do, and every setting it accepts |
 | `load` / `unload` | `model` | Switch models, or free the GPU |
+| `warm` | `model` | Gets a model ready **while another one is generating** |
+| `cancel` | — | Ends the running generation |
 | `image_to_mesh` | `model`, `image_path` | A mesh |
+| `multi_image_to_mesh` | `model`, `image_paths` | A mesh, from several views |
 | `texture_mesh` | `model`, `mesh_path`, `image_path` | A texture on a mesh you already have |
 | `text_to_image` | `prompt` | An image |
 | `image_to_image` | `image_path`, `prompt`, `denoise` | A reworked image |
 | `sketch_to_image` | `sketch_path`, `prompt`, `strength` | An image following a sketch |
-| `text_to_mesh` / `sketch_to_mesh` | both stages at once | A mesh |
 
-**Making the image and making the mesh are separate on purpose.** Spending a
-minute turning an image you dislike into a mesh helps nobody, so the usual path
-is `*_to_image`, look at it, then `image_to_mesh`. The combined methods are a
-shortcut over exactly those two steps and do nothing else.
+**Making the image and making the mesh are separate on purpose**, and there is
+no method that does both. Spending a minute turning an image you dislike into a
+mesh helps nobody, so the path is `*_to_image`, **look at it**, then
+`image_to_mesh` - and when it is nearly right, `image_to_image` again first.
+**Joining the steps belongs to whatever is showing them to a person**, because
+that is the only thing that knows whether they are about to look
+([`docs/protocol.md`](docs/protocol.md) §3.2). `client/hearth_client.py` has a
+`Flow` helper that does the bookkeeping.
 
-The image methods need ComfyUI. `image_to_mesh` and `texture_mesh` do not.
+The image methods need ComfyUI. The mesh methods do not.
 
-**What a model supports is data, not a name.** Read `capabilities` from `status`
-rather than checking which model it is; that is what keeps a caller working when
-a new model arrives.
+**Requests do not all wait for each other.** Generating is queued and serial -
+there is one GPU - but `status`, `warm` and `cancel` are answered **while a
+generation is running**, which is what lets an interface stay usable during one.
+So **replies are matched by `id`, never by the order they arrive in**.
+
+**What a model supports is data, not a name.** Read the capability table rather
+than checking which model it is; that is what keeps a caller working when a new
+model arrives. The image models answer in the same shape, so one piece of code
+builds a form for both.
 
 ## Progress: counted, never estimated
 
@@ -144,12 +180,28 @@ matching the contract**.
 
 ```powershell
 .venv\Scripts\python.exe tests\test_config.py            # the rules that keep hearth a relay
+.venv\Scripts\python.exe tests\test_protocol.py          # hearth answers as docs/protocol.md says
 .venv\Scripts\python.exe tests\test_template_runner.py   # the template obeys the contract
 .venv\Scripts\python.exe tests\test_model_switch.py      # switching models, on real hardware
 ```
 
-The first two need nothing but the install. **The third uses the GPU** and needs
-runners installed; point `HEARTH_TEST_IMAGE` at an input image first.
+The first three need nothing but the install - **no GPU, no runner, no ComfyUI**.
+`test_protocol.py` uses `selftest_long_job`, which occupies the GPU queue without
+a GPU, to check the thing that is easiest to break by accident: **that control
+methods are still answered while a generation runs**.
+
+**The fourth uses the GPU** and needs runners installed; point
+`HEARTH_TEST_IMAGE` at an input image first.
+
+To check that an **installed** runner still matches the contract - as opposed to
+the template - talk to it from outside:
+
+```powershell
+.venv\Scripts\python.exe tools\conformance.py --all
+```
+
+**It loads no model and generates nothing**: everything it asks is something the
+contract says a runner answers without one.
 
 ## Troubleshooting
 

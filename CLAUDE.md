@@ -49,9 +49,18 @@ not.
    descriptor 1 directly (contract §1).
 9. **stderr is always drained.** Left unread, the pipe fills and the runner stops.
 10. **Report what you counted, never an estimate** (contract §8).
+11. **Generating is queued and serial; control methods are answered while it
+    runs** (`docs/protocol.md` §2). Making everything serial again would be a
+    one-line simplification that silently removes the only thing keeping an
+    interface usable during a generation - and `warm` and `cancel` with it.
+12. **No method runs a whole flow.** Joining `text_to_image` to `image_to_mesh`
+    belongs to the caller, because only the caller knows whether a person is
+    about to look at the image (§3.2). A convenience method that chains them
+    looks helpful and takes that choice away.
 
 `tests/test_config.py` enforces 1, 2 and 7 as far as they can be checked
-statically.
+statically, and `tests/test_protocol.py` holds hearth to 11 - **without a GPU**,
+through `selftest_long_job`.
 
 ## Working on model code
 
