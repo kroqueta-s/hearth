@@ -15,8 +15,8 @@ Requests arrive on one stream but do not all want the same thing
 (`docs/protocol.md` §2). **Work that needs the GPU is queued and run one at a
 time**, because there is one GPU. **Control methods are answered as they
 arrive**, while that queue is busy - which is the whole point of them: asking
-what is loaded, warming what comes next, and cancelling are all things a person
-wants precisely while a generation is running.
+what is loaded and cancelling are both things a person wants precisely while a
+generation is running, and neither can wait for it.
 
 So replies interleave, and **a caller matches them by `id` rather than by
 order**. The wire says this plainly enough that a caller which ignores it will
@@ -30,7 +30,7 @@ import sys
 import threading
 
 from .rpc import Channel, Request, install_stdout_guard, read_requests
-from .worker import BACKGROUND_METHODS, CONTROL_METHODS, MANAGER, handle
+from .worker import CONTROL_METHODS, MANAGER, handle
 
 # Requests waiting for the GPU. **Unbounded on purpose**: refusing to accept a
 # request that is merely queued would make a caller invent its own queue.
@@ -50,15 +50,6 @@ def _serve_gpu() -> None:
             return
         request, channel = item
         handle(request, channel.responder(request.id))
-
-
-def _serve_background(request: Request, channel: Channel) -> None:
-    """Answer one request on a thread of its own (`warm`).
-
-    It neither needs the GPU nor should hold up the control path, since reading
-    weights off disk takes seconds that a `status` behind it would wait for.
-    """
-    handle(request, channel.responder(request.id))
 
 
 def main() -> int:
@@ -81,14 +72,7 @@ def main() -> int:
                 # are about to be ended anyway.
                 channel.responder(request.id).result({"bye": True})
                 break
-            if request.method in BACKGROUND_METHODS:
-                threading.Thread(
-                    target=_serve_background,
-                    args=(request, channel),
-                    name=f"hearth-{request.method}",
-                    daemon=True,
-                ).start()
-            elif request.method in CONTROL_METHODS:
+            if request.method in CONTROL_METHODS:
                 # Answered on this thread: these are fast and touch no GPU.
                 handle(request, channel.responder(request.id))
             else:

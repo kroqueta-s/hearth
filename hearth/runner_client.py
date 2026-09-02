@@ -59,8 +59,9 @@ class RunnerProcess:
         self._proc: subprocess.Popen[str] | None = None
         self._stderr: deque[str] = deque(maxlen=400)
         self._next_id = 1
-        # **One conversation at a time with this process.** A `warm` running on
-        # another thread must not interleave its lines with a `load`.
+        # **One conversation at a time with this process.** Control methods are
+        # answered on another thread (`docs/protocol.md` §2), and two requests
+        # interleaving their lines on one pipe is not protocol.
         self._call_lock = threading.Lock()
 
     def is_running(self) -> bool:
@@ -149,8 +150,9 @@ class RunnerProcess:
             RunnerError: If the runner is not running, died partway, or answered
                 with an error.
         """
-        # **Serialised per process.** `warm` runs on its own thread and may
-        # target a runner someone else is talking to.
+        # **Serialised per process.** More than one thread reaches a runner:
+        # `capabilities` is answered on the control thread while the GPU thread
+        # is generating.
         with self._call_lock:
             return self._converse(method, params, relay)
 

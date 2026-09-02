@@ -106,17 +106,6 @@ def m_capabilities(params: dict[str, Any], responder: Responder) -> dict[str, An
     return MANAGER.all_capabilities()
 
 
-def m_warm(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
-    """Get a model ready **while another one is generating**.
-
-    Nothing here touches the GPU (`docs/runner_contract.md` §9). **It never
-    fails**: a warm that did not happen comes back as `warmed: false` with a
-    reason, because the caller is in the middle of something else and must not
-    be interrupted by advice that did not work out.
-    """
-    return MANAGER.warm(str(params["model"]))
-
-
 def m_cancel(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
     """End the generation that is running, by ending its runner's process.
 
@@ -404,7 +393,6 @@ CONTROL_METHODS = {
     "ping": m_ping,
     "status": m_status,
     "capabilities": m_capabilities,
-    "warm": m_warm,
     "cancel": m_cancel,
 }
 
@@ -423,11 +411,6 @@ GPU_METHODS = {
     # Proving a long job does not freeze anything
     "selftest_long_job": m_selftest_long_job,
 }
-
-# **Answered on a thread of its own.** Reading weights off disk takes long enough
-# that doing it on the control thread would delay a `status` behind it, which is
-# the opposite of the point.
-BACKGROUND_METHODS = frozenset({"warm"})
 
 METHODS = {**CONTROL_METHODS, **GPU_METHODS}
 

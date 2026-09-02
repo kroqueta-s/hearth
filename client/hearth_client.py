@@ -396,7 +396,6 @@ class Flow:
         *,
         on_progress: OnProgress | None = None,
         on_step: Callable[[int, str, dict[str, Any]], None] | None = None,
-        warm_next: bool = True,
     ) -> list[dict[str, Any]]:
         """Run every step in order, blocking until they are done.
 
@@ -404,8 +403,6 @@ class Flow:
             on_progress: Passed through to each request.
             on_step: Called as `(index, method, result)` when a step finishes.
                 **This is where an interface shows the intermediate image.**
-            warm_next: Ask hearth to get the next step's model ready while this
-                one runs. Advice only, and free when it is declined.
 
         Returns:
             One result per step, in order.
@@ -419,8 +416,6 @@ class Flow:
             params = dict(step.get("params") or {})
             if self.results:
                 self._carry(self.results[-1], params)
-            if warm_next:
-                self._warm_after(index)
             result = self.hearth.call(method, params, on_progress=on_progress)
             self.results.append(result)
             if on_step is not None:
@@ -432,21 +427,3 @@ class Flow:
         for key in self.CARRIES:
             if key in previous and key not in params:
                 params[key] = previous[key]
-
-    def _warm_after(self, index: int) -> None:
-        """Get the next step's model ready, if it is a different one.
-
-        **Nothing here waits and nothing here fails.** A warm that does not
-        happen costs the load it would have saved and nothing else.
-        """
-        following = self.steps[index + 1 : index + 2]
-        if not following:
-            return
-        model = str(following[0].get("params", {}).get("model") or "")
-        current = str(self.steps[index].get("params", {}).get("model") or "")
-        if not model or model == current:
-            return
-        try:
-            self.hearth.send("warm", {"model": model}, done=lambda ok, payload: None)
-        except HearthError:
-            pass

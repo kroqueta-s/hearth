@@ -13,10 +13,6 @@ It is **cheap and safe by default**: nothing here loads a model, generates
 anything, or touches the GPU. Every check is something the contract says a
 runner answers *without* a model behind it.
 
-`--warm` additionally exercises `warm` when a runner declares it, which reads
-weights off disk. That is slow but still uses no GPU (§9), so it is safe to run
-next to other work.
-
 **This lives in hearth and speaks to runners from the outside**, which is what
 keeps rule 3 intact: a runner never imports hearth, so its conformance cannot be
 checked from inside it.
@@ -107,12 +103,11 @@ def _check_capabilities(checks: Checks, caps: dict[str, Any]) -> None:
             checks.fail(f"param {key}", "needs at least `type` and `default` (§3)")
 
 
-def check(name: str, *, do_warm: bool) -> Checks:
+def check(name: str) -> Checks:
     """Run the conversation against one runner.
 
     Args:
         name: A runner declared in `.env`.
-        do_warm: Also exercise `warm` when it is declared.
 
     Returns:
         What was found.
@@ -152,25 +147,6 @@ def check(name: str, *, do_warm: bool) -> Checks:
         except RunnerError as exc:
             checks.fail("survives a bad request", str(exc))
 
-        declares_warm = bool((caps.get("capabilities") or {}).get("warm"))
-        if declares_warm and do_warm:
-            started = time.perf_counter()
-            try:
-                result = runner.call("warm")
-                checks.ok(
-                    "warm answers",
-                    f"{time.perf_counter() - started:.1f}s, "
-                    f"warmed={result.get('warmed')} bytes_read={result.get('bytes_read')}",
-                )
-            except RunnerError as exc:
-                # §9: a warm that fails must not be an error the caller has to
-                # handle. Reaching hearth as an error is a contract violation.
-                checks.fail("warm answers", f"raised instead of reporting: {exc}")
-        elif declares_warm:
-            checks.ok("declares warm", "not exercised (pass --warm)")
-        else:
-            checks.warn("warm", "not declared: every model switch pays a full cold load")
-
         stderr = runner.stderr_tail(400)
         if "[protocol] unparsable line" in stderr:
             checks.fail("stdout is protocol only", "something printed past the stdout guard (§1)")
@@ -188,7 +164,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("runners", nargs="*", help="which runners to check")
     parser.add_argument("--all", action="store_true", help="check every runner in .env")
-    parser.add_argument("--warm", action="store_true", help="also exercise warm (reads from disk)")
     args = parser.parse_args()
 
     names = config.runner_names() if args.all or not args.runners else args.runners
@@ -197,7 +172,7 @@ def main() -> int:
         return 0
 
     print(f"runner contract v{CONTRACT_VERSION} - checking {', '.join(names)}")
-    results = [check(name, do_warm=args.warm) for name in names]
+    results = [check(name) for name in names]
     failed = sum(c.failed for c in results)
     warned = sum(c.warned for c in results)
     print(f"\n{failed} failed, {warned} to look at, across {len(results)} runners")

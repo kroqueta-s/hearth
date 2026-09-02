@@ -44,9 +44,9 @@ One JSON object per line, UTF-8, over stdin and stdout.
 | `shutdown` | — | `{"bye": true}` | Exit |
 
 **Optional methods**, implemented only if `capabilities` declares them:
-`text_to_mesh`, `multi_image_to_mesh`, `texture_mesh`, `warm` (§9).
+`text_to_mesh`, `multi_image_to_mesh`, `texture_mesh`.
 
-**A runner is never asked to cancel anything** (§10).
+**A runner is never asked to cancel anything** (§9).
 
 ## 3. What `capabilities` looks like
 
@@ -62,8 +62,7 @@ One JSON object per line, UTF-8, over stdin and stdout.
     "text_to_mesh": false,
     "multi_image_to_mesh": false,
     "texture": true,
-    "texture_mesh": true,
-    "warm": true
+    "texture_mesh": true
   },
   "params": {
     "steps": {"type": "int", "default": 30, "min": 1, "max": 200},
@@ -200,44 +199,7 @@ advances the count; for a hand-written loop, replace the `tqdm` in the module
 that holds it. Both work without modifying the model's code, which matters
 because that code gets replaced wholesale on the next update.
 
-## 9. `warm`: getting ready **without touching the GPU**
-
-**Optional.** Declare `"warm": true` only if it is implemented.
-
-| | |
-|---|---|
-| Arguments | — |
-| Returns | `{"warmed": bool, "elapsed_sec": float, "bytes_read": int}` |
-
-A caller that knows which model comes next can call `warm` on it **while another
-model is still generating**. This is the one place where two runners are alive
-at once, and it is only safe because of a rule with no exceptions:
-
-> **`warm` must not allocate one byte of VRAM, and must not import anything that
-> initialises the GPU.** Another model holds the GPU at that moment.
-
-What it is for is the part of loading that is **not** the GPU transfer: reading
-the weights off disk into the page cache, and paying the import cost of the
-framework. Both can be done next to a running generation; the transfer cannot.
-
-- **Read the weight files and discard what you read.** The point is the operating
-  system's cache, not your process's memory. Report `bytes_read` so a caller can
-  see it happened.
-- **`load` after a `warm` must still work if the warm never happened.** `warm` is
-  advice, never a precondition — hearth skips it whenever it cannot afford it.
-- **A failed `warm` is not an error worth propagating.** Return
-  `{"warmed": false}` with a reason in `message` rather than raising: the caller
-  is about to generate with a different model and must not be interrupted.
-- **This is not "keep the weights in RAM".** Holding a copy is a different
-  design with a different cost, and on unified memory it competes with the VRAM
-  the running model is using.
-
-**Whether this is worth implementing is a measurement, not a guess.** Time your
-`load` and split it into process start, import, disk read and GPU transfer. If
-the disk read is already cached and imports are quick, `warm` buys nothing and
-`"warm": false` is the honest answer.
-
-## 10. Cancelling
+## 9. Cancelling
 
 **A runner implements nothing for this.** There is no `cancel` method, and a
 request that has started always runs to its end from the runner's point of view.

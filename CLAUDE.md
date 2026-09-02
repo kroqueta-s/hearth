@@ -17,8 +17,14 @@ everything tracked by git will be read by a stranger.**
 
 | Where | Language | Why |
 |---|---|---|
-| **Everything tracked by git** — code, comments, docstrings, README, the contract, commit messages, `.env.example` | **English** | It is published, or may be. A reader who does not share the author's language should not be shut out of the part they have to use. |
+| **Everything tracked by git** — code, comments, docstrings, **every string anyone reads at runtime**, README, the contract, commit messages, `.env.example` | **English** | It is published, or may be. A reader who does not share the author's language should not be shut out of the part they have to use. |
 | **`docs/local/`** — design notes, verification reports, the record of what was tried and rejected | The author's language | It is **not tracked**, and never will be. It carries the operator's environment, dead ends, and reasoning that would only mislead a stranger reading it as documentation. |
+
+**Text shown to a person is not an exception to this.** Progress messages, error
+messages, log lines, and anything a user interface displays are English, the same
+as the code around them. **Assume whoever runs this reads English**: an error
+they cannot read is worse than no error, and the person most likely to be reading
+one is a stranger who just installed it.
 
 Two consequences worth stating plainly:
 
@@ -52,7 +58,7 @@ not.
 11. **Generating is queued and serial; control methods are answered while it
     runs** (`docs/protocol.md` §2). Making everything serial again would be a
     one-line simplification that silently removes the only thing keeping an
-    interface usable during a generation - and `warm` and `cancel` with it.
+    interface usable during a generation - and `cancel` with it.
 12. **No method runs a whole flow.** Joining `text_to_image` to `image_to_mesh`
     belongs to the caller, because only the caller knows whether a person is
     about to look at the image (§3.2). A convenience method that chains them

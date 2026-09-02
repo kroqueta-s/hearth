@@ -58,7 +58,7 @@ order, and it must not.
 | Class | Methods | Behaviour |
 |---|---|---|
 | **GPU** | `load`, `unload`, every generating method, `selftest_long_job` | **Strictly serial.** Queued and run one at a time, in the order they arrived. There is one GPU |
-| **Control** | `ping`, `status`, `capabilities`, `warm`, `cancel`, `shutdown` | **Answered immediately**, even while a generation is running |
+| **Control** | `ping`, `status`, `capabilities`, `cancel`, `shutdown` | **Answered immediately**, even while a generation is running |
 
 So a `ping` sent during an eight-minute generation is answered in milliseconds,
 **before** the generation it was sent after. Two consequences for the caller:
@@ -66,12 +66,11 @@ So a `ping` sent during an eight-minute generation is answered in milliseconds,
 1. **Match replies by `id`.** A caller that assumes the next reply belongs to the
    last request will attribute a `ping` result to a generation and be wrong.
 2. **The control methods are what make a responsive user interface possible.**
-   Asking what is loaded, warming what comes next, and cancelling all work while
-   the GPU is busy — which is precisely when a user wants them.
+   Asking what is loaded and cancelling both work while the GPU is busy — which
+   is precisely when a user wants them.
 
-**Control methods never touch the GPU.** `warm` is the interesting case and is
-allowed only because it is defined as not touching it
-([contract §9](runner_contract.md#9-warm-getting-ready-without-touching-the-gpu)).
+**Control methods never touch the GPU.** That is what makes answering them next
+to a generation safe, and it is why nothing that loads weights is one of them.
 
 ## 3. Methods
 
@@ -82,7 +81,6 @@ allowed only because it is defined as not touching it
 | `ping` | — | `ok`, `pid`, `python`, `role`, `protocol` (§6). **Starts nothing**, so it is instant |
 | `status` | — | §4. **Starts no runner**: inventory and state only |
 | `capabilities` | `model` (optional) | One runner's capability table ([contract §3](runner_contract.md#3-what-capabilities-looks-like)), or every runner's when `model` is omitted. **Starting a runner to ask is cheap, but it is not free** — see §4 |
-| `warm` | `model` | `{"warmed": bool, ...}`. Get a model ready **while another one is generating**. §5 |
 | `cancel` | — | `{"canceled": bool, "was": name}`. §5 |
 | `shutdown` | — | `{"bye": true}`, then hearth exits |
 
@@ -153,16 +151,14 @@ doing three of those while a window is opening is felt.
 so one piece of code can build a form for both. A route the model does not have
 is `false` in its capability table (FLUX has no ControlNet here, for instance).
 
-## 5. Long jobs: warming, cancelling, and telling work from a hang
+## 5. Long jobs: cancelling, and telling work from a hang
 
 **Switching models costs a load** — tens of seconds, on the machine this was
-written for. Two control methods exist to make that liveable.
-
-**`warm`** tells hearth to get a model ready while a different one is generating:
-its process starts and its weights are read off disk, but **nothing touches the
-GPU** until the eventual `load`. It is advice, not a promise: hearth may decline,
-a runner may not implement it, and **the answer is never an error that should
-interrupt what you are doing**. Warm the model of step N+1 as step N begins.
+written for, and that is a floor rather than something to design around. Loading
+is dominated by reading the weights and putting them on the card, and neither
+can happen while another model holds it. **So a flow that alternates between two
+models pays for every switch**, and the way to spend less is to order the steps
+so there are fewer of them, not to overlap them.
 
 **`cancel`** ends the running generation by **ending the runner's process**. This
 is the only thing that stops a `torch` loop reliably, so the price is fixed and

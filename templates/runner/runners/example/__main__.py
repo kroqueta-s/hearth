@@ -58,9 +58,6 @@ def m_capabilities(params: dict[str, Any], progress: Any) -> dict[str, Any]:
             "multi_image_to_mesh": False,
             "texture": False,
             "texture_mesh": False,
-            # **Only say true once it is measured to help** (§9). A warm that
-            # saves nothing is a moving part that earns nothing.
-            "warm": True,
         },
         "params": {
             "steps": {"type": "int", "default": config.STEPS, "min": 1, "max": 200},
@@ -86,19 +83,6 @@ def m_unload(params: dict[str, Any], progress: Any) -> dict[str, Any]:
     return {"unloaded": freed, "vram_used_gb": used_gb}
 
 
-def m_warm(params: dict[str, Any], progress: Any) -> dict[str, Any]:
-    """Get ready **without touching the GPU** (`docs/runner_contract.md` §9).
-
-    hearth calls this while **another model is generating**, so the one rule
-    that cannot bend is that nothing here allocates VRAM or initialises the GPU.
-    What it buys is the part of a load that is not the transfer: the weights in
-    the operating system's cache, and the framework already imported.
-    """
-    from . import pipeline
-
-    return pipeline.warm()
-
-
 def m_image_to_mesh(params: dict[str, Any], progress: Any) -> dict[str, Any]:
     """One image to a raw mesh. **Preprocessing is this runner's job.**"""
     from . import pipeline
@@ -110,7 +94,6 @@ METHODS = {
     "capabilities": m_capabilities,
     "load": m_load,
     "unload": m_unload,
-    "warm": m_warm,
     "image_to_mesh": m_image_to_mesh,
 }
 

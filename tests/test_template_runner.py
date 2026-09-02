@@ -88,21 +88,6 @@ def test_capabilities_declares_a_contract_version() -> None:
     assert caps["contract"] >= 2, caps
 
 
-def test_warm_answers_and_never_raises() -> None:
-    """§9: `warm` reports what happened rather than failing.
-
-    The template's weights directory is not there, which is the interesting
-    case: hearth calls this **while another model is generating**, so a warm
-    that cannot happen must come back as `warmed: false` and not as an error
-    the caller has to handle.
-    """
-    events = _converse([{"id": 1, "method": "warm"}, {"id": 2, "method": "shutdown"}])
-    assert events[0]["event"] == "result", events
-    assert events[0]["result"]["warmed"] is False, events
-    assert events[0]["result"].get("message"), "it did not say why"
-    assert events[1]["result"] == {"bye": True}, "it did not survive to shut down"
-
-
 def test_shutdown_is_answered_and_ends_it() -> None:
     """§2: shutdown replies once and the process exits."""
     events = _converse([{"id": 1, "method": "shutdown"}])

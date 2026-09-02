@@ -63,49 +63,6 @@ def load(progress: Progress | None = None) -> float:
     return _LOAD_SEC
 
 
-def warm() -> dict[str, Any]:
-    """Read the weights off disk **without touching the GPU** (contract §9).
-
-    hearth calls this while **another model is still generating**, so nothing
-    here may allocate VRAM or import something that initialises the GPU. What is
-    bought is the operating system's file cache: the eventual `load` then reads
-    from memory instead of disk, and only the transfer is left to pay.
-
-    **The bytes are read and thrown away on purpose.** Keeping them would be a
-    second copy competing with the model that is running - on unified memory,
-    competing for the same physical pool as its VRAM.
-
-    **This never raises.** The caller is in the middle of something else, and a
-    warm that did not happen only costs the time it would have saved.
-
-    Returns:
-        `warmed`, `bytes_read` and `elapsed_sec`.
-    """
-    started = time.perf_counter()
-    total = 0
-    try:
-        # **An unset path is not the current directory.** `Path("")` is `.`,
-        # which exists, so without this a runner with no weights configured
-        # cheerfully reads its own source and reports a warm that did nothing.
-        if str(config.WEIGHTS_DIR) in ("", "."):
-            return {"warmed": False, "message": "EXAMPLE_WEIGHTS_DIR is not set"}
-        if not config.WEIGHTS_DIR.is_dir():
-            return {"warmed": False, "message": f"no weights at {config.WEIGHTS_DIR}"}
-        for path in sorted(config.WEIGHTS_DIR.rglob("*")):
-            if not path.is_file():
-                continue
-            with path.open("rb") as handle:
-                while chunk := handle.read(8 * 1024 * 1024):
-                    total += len(chunk)
-    except OSError as exc:
-        return {"warmed": False, "bytes_read": total, "message": str(exc)}
-    return {
-        "warmed": True,
-        "bytes_read": total,
-        "elapsed_sec": round(time.perf_counter() - started, 2),
-    }
-
-
 def unload() -> tuple[bool, float]:
     """Release the weights and give the VRAM back.
 

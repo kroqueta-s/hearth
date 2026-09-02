@@ -115,7 +115,6 @@ short version.
 | `status` | — | What is installed, what is loaded, what the image side can do |
 | `capabilities` | `model` | What one model can do, and every setting it accepts |
 | `load` / `unload` | `model` | Switch models, or free the GPU |
-| `warm` | `model` | Gets a model ready **while another one is generating** |
 | `cancel` | — | Ends the running generation |
 | `image_to_mesh` | `model`, `image_path` | A mesh |
 | `multi_image_to_mesh` | `model`, `image_paths` | A mesh, from several views |
@@ -136,8 +135,8 @@ that is the only thing that knows whether they are about to look
 The image methods need ComfyUI. The mesh methods do not.
 
 **Requests do not all wait for each other.** Generating is queued and serial -
-there is one GPU - but `status`, `warm` and `cancel` are answered **while a
-generation is running**, which is what lets an interface stay usable during one.
+there is one GPU - but `status`, `capabilities` and `cancel` are answered **while
+a generation is running**, which is what lets an interface stay usable during one.
 So **replies are matched by `id`, never by the order they arrive in**.
 
 **What a model supports is data, not a name.** Read the capability table rather

@@ -237,46 +237,6 @@ class Manager:
             "stop_sec": round(time.perf_counter() - stop_started, 2),
         }
 
-    # --- Getting ready for what comes next -----------------------------------
-    def warm(self, name: str) -> dict[str, Any]:
-        """Get a runner ready **while another one is generating**.
-
-        Its process is started and, if it declares `warm`, it is told to read its
-        weights off disk. **Nothing here touches the GPU**
-        (`docs/runner_contract.md` §9), which is the only reason it is allowed
-        to run next to a generation.
-
-        **This never raises.** A warm that failed is a warm that did not happen,
-        and the caller is in the middle of something else.
-
-        Args:
-            name: The runner to get ready.
-
-        Returns:
-            `warmed`, and `why` when it did not happen.
-        """
-        try:
-            with self._lock:
-                if self._loaded == name:
-                    return {"warmed": False, "model": name, "why": "already loaded"}
-            caps = self.capabilities(name)
-            if not caps.get("capabilities", {}).get("warm", False):
-                # **Its process is up, which is a part of the load already
-                # paid.** The rest needs the runner's cooperation.
-                return {"warmed": False, "model": name, "why": "the runner does not declare warm"}
-            runner = self._runner(name)
-            runner.start()
-            started = time.perf_counter()
-            result = runner.call("warm") or {}
-            return {
-                "warmed": bool(result.get("warmed", True)),
-                "model": name,
-                "elapsed_sec": round(time.perf_counter() - started, 2),
-                **{k: v for k, v in result.items() if k != "warmed"},
-            }
-        except (RunnerError, OSError, ValueError) as exc:
-            return {"warmed": False, "model": name, "why": str(exc)}
-
     # --- Generating ----------------------------------------------------------
     def generate(
         self, name: str, method: str, params: dict[str, Any], relay: Relay | None = None
