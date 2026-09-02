@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
 """Pin the rules that keep hearth a relay rather than a model host.
 
-Four things are checked, and each one is a rule that is easy to break by
-accident and expensive to discover later:
+Each of these is a rule that is easy to break by accident and expensive to
+discover later:
 
-- **No model is named in code.** Runners and image models come from `.env`, so
-  adding a fourth model is configuration rather than a patch.
+- **The runner list is parsed from the environment**, and **no runner's name
+  appears anywhere in hearth's source**. Together those are what make adding a
+  model configuration rather than a patch.
 - **hearth never imports torch.** Only a runner holds the GPU. The moment hearth
   imports torch, the separation that lets runners have conflicting dependencies
   is gone.
@@ -21,6 +22,7 @@ Run it with hearth's own virtual environment::
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -43,10 +45,44 @@ def _sources(sub: str) -> list[Path]:
     return sorted(f for f in directory.rglob("*.py") if "__pycache__" not in f.parts)
 
 
-def test_runners_come_from_env() -> None:
-    """The list of runners comes from `.env`, never from code."""
+def test_runners_are_parsed_from_env() -> None:
+    """The list of runners is parsed out of the environment, never written in code.
+
+    **Not "at least one runner is installed".** A fresh clone with nothing
+    registered yet is a correct state, so asserting otherwise would fail the
+    build for a working repository.
+    """
+    saved = os.environ.get("HEARTH_RUNNERS")
+    os.environ["HEARTH_RUNNERS"] = " alpha, beta ,,"
+    try:
+        assert config.runner_names() == ["alpha", "beta"]
+    finally:
+        if saved is None:
+            del os.environ["HEARTH_RUNNERS"]
+        else:
+            os.environ["HEARTH_RUNNERS"] = saved
+
+
+def test_no_runner_name_appears_in_code() -> None:
+    """**The rule this actually protects**: hearth never mentions a model by name.
+
+    Checked against whatever is registered here, so it says nothing on a clone
+    with no runners - there is nothing to name yet.
+    """
     names = config.runner_names()
-    assert names, "HEARTH_RUNNERS is empty (check .env)"
+    if not names:
+        print("       (no runners registered; nothing to check)")
+        return
+    for name in names:
+        # Word boundaries, not a bare substring: a short runner name would
+        # otherwise match inside unrelated words and fail everything.
+        pattern = re.compile(rf"{re.escape(name)}", re.IGNORECASE)
+        offenders = [
+            str(f.relative_to(REPO_ROOT))
+            for f in _sources("hearth")
+            if pattern.search(f.read_text(encoding="utf-8"))
+        ]
+        assert not offenders, f"the runner name {name!r} appears in {offenders}"
 
 
 def test_runner_spec_is_complete() -> None:

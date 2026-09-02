@@ -21,8 +21,8 @@ or `error`**::
 ## Promises that must not be broken
 
 1. **Nothing else may write to the protocol's stdout.** Model dependencies print
-   to stdout as a matter of course (one of Hunyuan3D's emits `using moe`), and a
-   single such line breaks the protocol. `install_stdout_guard()` duplicates the
+   to stdout as a matter of course - version banners, notices, progress an
+   author wanted a human to see - and a single such line breaks the protocol. `install_stdout_guard()` duplicates the
    real stdout, hides it, and points `sys.stdout` at stderr. **Call it first.**
 2. **stderr is never parsed.** It is for people and for logs, and it is what
    gets read back after a crash.
