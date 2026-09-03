@@ -28,7 +28,7 @@ One JSON object per line, UTF-8, over stdin and stdout.
 | # | Rule | Why |
 |---|---|---|
 | 1 | **One message is one line of JSON**, separated by `\n` | Lines are the framing, so newlines inside a message stay JSON-escaped |
-| 2 | **Nothing but the protocol may write to stdout** | Model code prints to stdout as a matter of course. A runner duplicates the real stdout at startup, hides it, and points `sys.stdout` at stderr |
+| 2 | **Nothing but the protocol may write to stdout** | Model code prints to stdout as a matter of course. A runner duplicates the real stdout at startup, hides it, and points `sys.stdout` **and file descriptor 1 itself** at stderr, so a C extension cannot reach the protocol either |
 | 3 | **stderr is never parsed, but must be drained** | Left unread, the pipe fills and the runner stops |
 | 4 | **No bytes on the wire: pass absolute paths** | Both processes are on the same machine, so copying is waste |
 | 5 | **Requests are serial** | There is one GPU |
