@@ -95,6 +95,13 @@ def _contract_shape(name: str, result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+# How long a cancel waits on ComfyUI. **Short on purpose**: cancelling is
+# interactive, it is answered on the thread that reads stdin, and a caller that
+# has just pressed cancel usually presses stop next. The default of thirty
+# seconds turned that into a minute of silence when ComfyUI was wedged.
+CANCEL_TIMEOUT_SEC = 5.0
+
+
 class Manager:
     """Supervises the runners. **All the state lives here.**"""
 
@@ -347,7 +354,16 @@ class Manager:
         if name.startswith(EXTERNAL_PREFIX):
             # **Somebody else's process.** Only this prompt is taken out of
             # ComfyUI's queue; nothing is killed on the user's behalf (§6).
-            dropped = ComfyUIClient().cancel_prompt(prompt_id) if prompt_id else False
+            # **A short timeout, because this is somebody pressing a button.**
+            # The default is thirty seconds, and `cancel` is answered on the
+            # thread that reads stdin - so an unresponsive ComfyUI would hold up
+            # every control method behind it, including the `shutdown` a caller
+            # sends next.
+            dropped = (
+                ComfyUIClient(timeout_sec=CANCEL_TIMEOUT_SEC).cancel_prompt(prompt_id)
+                if prompt_id
+                else False
+            )
             # **The request ends either way.** `_canceling` is set above, and the
             # route asks about it between polls of ComfyUI's history, so the wait
             # stops within a poll whatever the queue says. What differs is
@@ -404,7 +420,12 @@ class Manager:
         with self._lock:
             self._busy = label
             self._prompt_id = prompt_id
-            self._canceling = False
+            # **A shutdown already under way is not cleared by work starting.**
+            # `_serve_gpu` refuses what is still queued, but a request that got
+            # past that check reaches here a moment later, and starting fresh
+            # would forget the shutdown - leaving a prompt running in ComfyUI
+            # that nobody is left to collect. Cancelling is already true of it.
+            self._canceling = self._shutting_down
 
     def is_canceling(self) -> bool:
         """Whether a cancel has been asked for and not yet taken effect.
@@ -565,7 +586,7 @@ class Manager:
                     with contextlib.suppress(Exception):
                         # **A shutdown must not fail over an unreachable
                         # ComfyUI.** Everything below still has to happen.
-                        ComfyUIClient().cancel_prompt(prompt_id)
+                        ComfyUIClient(timeout_sec=CANCEL_TIMEOUT_SEC).cancel_prompt(prompt_id)
             else:
                 runner = self._runners.get(busy)
                 if runner is not None:

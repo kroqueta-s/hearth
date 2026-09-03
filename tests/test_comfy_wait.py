@@ -186,6 +186,28 @@ def test_a_cancel_that_races_the_submission_is_not_forgotten() -> None:
     assert board.is_canceling() is True, "recording the id cleared the cancel"
 
 
+def test_a_shutdown_is_not_forgotten_by_work_that_starts_a_moment_later() -> None:
+    """**The same window as a racing cancel, one door along.**
+
+    `_serve_gpu` refuses what is still queued once a shutdown begins, but a
+    request that got past that check reaches `begin_external` a moment later.
+    Starting fresh there would clear the cancelling flag that `shutdown` had
+    just set - and the prompt would go to ComfyUI and keep running with nobody
+    left to collect it.
+    """
+    from hearth import manager  # noqa: PLC0415 - imported here to keep it cheap
+
+    board = manager.Manager()
+    with board._lock:  # noqa: SLF001 - standing in for `shutdown` without runners
+        board._shutting_down = True  # noqa: SLF001
+        board._canceling = True  # noqa: SLF001
+
+    board.begin_external(f"{manager.EXTERNAL_PREFIX}test")
+    assert board.is_canceling() is True, (
+        "work starting cleared a shutdown that was already under way"
+    )
+
+
 def main() -> int:
     """Run every test."""
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

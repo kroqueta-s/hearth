@@ -72,6 +72,9 @@ should track.
   has just pressed a button is exactly who presses cancel next. **A request
   still waiting in the GPU queue remains uncancellable** - measured at under
   50 ms on this machine, and written down rather than papered over.
+- **A cancel waits five seconds on ComfyUI, not thirty**, and a shutdown that
+  has already begun is not cleared by a request that starts a moment later —
+  which would have left a prompt running in ComfyUI with nobody to collect it.
 - `canceled: true` now means the request ends. `dropped_from_queue` says whether
   ComfyUI was still holding the work, and `why` explains a false one.
 

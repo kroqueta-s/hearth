@@ -31,8 +31,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "client"))
 
-from hearth import config  # noqa: E402
 from hearth_client import Hearth, RequestFailed  # noqa: E402
+
+from hearth import config  # noqa: E402
 
 
 def _hearth() -> Hearth:

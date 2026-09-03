@@ -38,7 +38,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # **One input, used for every model.** Comparing models on different inputs says
 # nothing about the models. Point HEARTH_TEST_IMAGE at whatever specimen you use.
-IMAGE = Path(os.environ.get("HEARTH_TEST_IMAGE", str(REPO_ROOT / "assets" / "sample.png")))
+#
+# **There is no default, because there is no specimen in this repository.** It
+# used to name `assets/sample.png`, a path that has never existed here, so the
+# test that needs it failed with "no input image at <a path you have never seen>"
+# instead of "tell me which image to use". hearth holds no models and no
+# fixtures; the picture belongs to whoever is comparing runners.
+_RAW_IMAGE = os.environ.get("HEARTH_TEST_IMAGE", "").strip()
+IMAGE: Path | None = Path(_RAW_IMAGE) if _RAW_IMAGE else None
 
 # **A budget only goes in here when a measurement backs it.** A number with
 # nothing behind it hardens into "that is how long it takes" and stops anyone
