@@ -65,6 +65,13 @@ should track.
 - **`cancel` learns which prompt to drop.** The id does not exist when the work
   starts, so it is recorded after the workflow is submitted - without forgetting
   a cancel that arrived in between, and dropping the prompt at once if one did.
+- **An image is marked busy before the slow part, not after.** Measured against
+  a live ComfyUI: a cancel sent a tenth of a second after the request was
+  answered "nothing is generating" and the image ran to completion. Unloading
+  the 3D model to make room happens first and takes seconds, and the person who
+  has just pressed a button is exactly who presses cancel next. **A request
+  still waiting in the GPU queue remains uncancellable** - measured at under
+  50 ms on this machine, and written down rather than papered over.
 - `canceled: true` now means the request ends. `dropped_from_queue` says whether
   ComfyUI was still holding the work, and `why` explains a false one.
 
