@@ -196,6 +196,10 @@ Two things about that reply are worth reading precisely.
   cancel programmatically the instant it sends a request — `stop()` does — may
   fall inside it, and should treat `canceled: false` as "it may not have started
   yet" rather than "there was nothing to stop".
+- **A cancel waits five seconds on ComfyUI, not thirty.** It is answered on the
+  thread that reads stdin, so a wedged ComfyUI would otherwise hold up every
+  control method queued behind it — including the `shutdown` a caller usually
+  sends next.
 
 **A shutdown during a generation kills the runner first.** Asking it to unload
 would wait for the generation to finish, which looks like a hang; and the usual

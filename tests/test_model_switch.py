@@ -50,8 +50,15 @@ def _sequence() -> list[str]:
 
 def main() -> int:
     """Run the switch sequence and report."""
+    if IMAGE is None:
+        print(
+            "set HEARTH_TEST_IMAGE to an input image. **There is no default**: "
+            "hearth ships no specimen, and comparing runners on different "
+            "pictures says nothing about the runners."
+        )
+        return 1
     if not IMAGE.is_file():
-        print(f"no input image at {IMAGE} (set HEARTH_TEST_IMAGE)")
+        print(f"HEARTH_TEST_IMAGE names nothing: {IMAGE}")
         return 1
 
     order = _sequence()
