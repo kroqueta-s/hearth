@@ -98,6 +98,14 @@ class RunnerProcess:
         # message raises on the way out.
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUNBUFFERED"] = "1"
+        # **Which process the runner belongs to**, so it can end itself if that
+        # process dies without stopping it. Its own parent is not reliable:
+        # measured 2026-09-03, a venv `python.exe` re-executes the base
+        # interpreter, so the runner's parent is a launcher that outlives
+        # hearth. A hearth that crashes otherwise leaves a runner holding the
+        # whole card, and **nothing anywhere errors** - everything afterwards is
+        # simply several times slower.
+        env["HEARTH_PARENT_PID"] = str(os.getpid())
         self._proc = subprocess.Popen(
             [str(python), "-m", module],
             cwd=cwd or None,

@@ -125,6 +125,19 @@ def _alive(pid: int) -> bool:
     return str(pid) in done.stdout
 
 
+
+def _kill(pid: int) -> None:
+    """End one process and **not its children**. No new dependency for this."""
+    if sys.platform != "win32":
+        os.kill(pid, 9)
+        return
+    subprocess.run(
+        ["taskkill", "/F", "/PID", str(pid)],
+        capture_output=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+
 def _generating(session: Session, out_dir: Path, seconds: float = 30.0) -> int:
     """Start a generation and return the process actually running it.
 
@@ -281,6 +294,57 @@ def test_a_mesh_is_never_left_half_written() -> None:
         leftovers = list(out_dir.glob("*.tmp"))
         assert not leftovers, f"staging files were left behind: {leftovers}"
     finally:
+        session.kill()
+
+
+def test_a_runner_ends_itself_when_hearth_crashes() -> None:
+    """**The orphan case nothing else covers.**
+
+    `shutdown` stops a runner, and killing hearth from outside kills the tree.
+    Neither happens when hearth **crashes**: on Windows the child simply carries
+    on with a new parent, holding the whole card, and nothing anywhere errors.
+    Everything afterwards is several times slower for a reason nobody can see.
+
+    So the runner watches its own parent. This kills hearth without letting it
+    tidy up - the crash, as far as the runner is concerned - and waits.
+    """
+    # **Silent on purpose.** A runner that reports progress finds out its caller
+    # is gone the moment a write fails, and one reading stdin finds out when
+    # that closes. With either of those in play this test passes whether the
+    # watchdog exists or not - which was true of the first version of it.
+    os.environ["SLEEPY_SILENT"] = "1"
+    session = Session()
+    try:
+        # **hearth's own pid, not the one `Popen` returned.** Measured
+        # 2026-09-03: a venv `python.exe` on this machine re-executes the base
+        # interpreter, so `Popen` holds a launcher and hearth is its child.
+        # Killing the launcher leaves hearth running and proves nothing; killing
+        # the tree takes the runner with it and proves nothing either.
+        kind, hello = session.until(session.send("ping"), timeout=15)
+        assert kind == "result", hello
+        hearth_pid = int(hello["pid"])
+
+        pid = _generating(session, OUT / "orphan", seconds=60.0)
+        assert _alive(pid), "the runner did not start"
+        assert pid != hearth_pid, "the runner and hearth are the same process"
+
+        # **Killed, not shut down**, and killed on its own: that is a crash as
+        # far as everything downstream is concerned.
+        _kill(hearth_pid)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and _alive(hearth_pid):
+            time.sleep(0.1)
+        assert not _alive(hearth_pid), "hearth did not die"
+
+        # The watchdog looks every two seconds; ten is room to spare.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and _alive(pid):
+            time.sleep(0.2)
+        assert not _alive(pid), (
+            f"the runner ({pid}) outlived a crashed hearth and still holds the GPU"
+        )
+    finally:
+        os.environ.pop("SLEEPY_SILENT", None)
         session.kill()
 
 

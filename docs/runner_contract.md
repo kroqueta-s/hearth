@@ -247,6 +247,36 @@ that writes several files at once (`.obj` with its `.mtl` and its textures) is
 written into a directory of its own and **the directory** is renamed: renaming
 only the mesh leaves the references inside it pointing at nothing.
 
+## 10. Ending when hearth is gone
+
+**A runner watches the process that started it and ends itself when it goes.**
+hearth stops its runners when it shuts down, and a caller that kills hearth kills
+the whole tree - but a hearth that *crashes* does neither. On Windows the child
+carries on with the entire card, and **nothing anywhere errors**: everything
+afterwards is several times slower for a reason nobody can see. This is the only
+defence against that, and it is fifteen lines.
+
+Copy `watch_parent()` from the template and call it at the top of `main()`,
+before any weights are loaded. Three things about it are measured rather than
+assumed, and each one is a way of getting it wrong:
+
+- **Watch the process `HEARTH_PARENT_PID` names**, not this process's parent.
+  hearth sets that variable when it starts a runner. A venv's `python.exe` may
+  re-execute the base interpreter, which makes the runner a grandchild of a
+  launcher that outlives hearth by design - watching it would never fire.
+- **`os.getppid()` cannot detect a dead parent on Windows.** A process whose
+  parent dies is not reparented there, so the field keeps naming the dead one.
+  Open a handle at startup and wait on it: the handle stays valid afterwards,
+  and a reused process id cannot fool it.
+- **Leaving must not depend on being able to say so.** stderr is a pipe to the
+  process that just died, so the message raises; an exception there kills the
+  watching thread and leaves the runner holding the card, which is the whole
+  failure being prevented.
+
+Reporting progress and reading stdin are not substitutes. Both notice when the
+caller's pipes close, which covers most of a run - but not the middle of a long
+kernel, which is exactly when there is most to lose.
+
 ## Future
 
 **Not implemented, and recorded so that it is not rediscovered.**
