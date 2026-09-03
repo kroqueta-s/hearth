@@ -91,8 +91,8 @@ to a generation safe, and it is why nothing that loads weights is one of them.
 | `load` | `model` | Switch to a model and load its weights. Reports `spawn_sec` apart from the load itself, and `already: true` when it was the one already there |
 | `unload` | — | Free the GPU. Reports `vram_used_gb` as the runner measured it, `was` (the model) and `stop_sec` |
 | `text_to_image` | `prompt`, §3.1 | An image |
-| `image_to_image` | `image_path`, `prompt`, `denoise`, §3.1 | A reworked image |
-| `sketch_to_image` | `sketch_path`, `prompt`, `strength`, §3.1 | An image following a sketch |
+| `image_to_image` | `image_path`, `prompt`, `denoise`, §3.1 | A reworked image. **The result's `image_path` is the new one**; the input comes back as `source_path` |
+| `sketch_to_image` | `sketch_path`, `prompt`, `strength`, §3.1 | An image following a sketch. The sketch comes back as `source_path`, with `source_argument` naming which argument it was |
 | `image_to_mesh` | `model`, `image_path` | A raw mesh |
 | `multi_image_to_mesh` | `model`, `image_paths` | A raw mesh from several views |
 | `texture_mesh` | `model`, `mesh_path`, `image_path` | A texture on a mesh you already have. **Its settings are the runner's `method_params.texture_mesh`**, not the ones `image_to_mesh` takes ([contract §3](runner_contract.md)) |

@@ -255,7 +255,10 @@ def _image(method: str, params: dict[str, Any], responder: Responder) -> dict[st
         responder: Where progress goes.
 
     Returns:
-        `run_dir`, `image_path`, `image_model` and `params_used`.
+        `run_dir`, `image_path`, `image_model` and `params_used`. A route that
+        consumes an input file also reports `source_path` and
+        `source_argument`. **The input is never reported as `image_path`**:
+        that key names what came out.
 
     Raises:
         RuntimeError: If ComfyUI is not running.
@@ -307,7 +310,13 @@ def _image(method: str, params: dict[str, Any], responder: Responder) -> dict[st
     }
     source = _IMAGE_INPUT.get(method)
     if source:
-        out[source] = str(params[source])
+        # **Never under `image_path`.** That key names what came out, and for
+        # `image_to_image` the input is an image too - echoing it there
+        # overwrote the only record of where the new image was written. A caller
+        # then had the input twice and the result not at all, and nothing
+        # errored: the path it read was a real file, just the wrong one.
+        out["source_path"] = str(params[source])
+        out["source_argument"] = source
     return out
 
 
