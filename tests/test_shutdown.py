@@ -26,6 +26,7 @@ Run it with hearth's own virtual environment::
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -334,6 +335,14 @@ def test_a_runner_ends_itself_when_hearth_crashes() -> None:
         # **Killed, not shut down**, and killed on its own: that is a crash as
         # far as everything downstream is concerned.
         _kill(hearth_pid)
+        if hearth_pid == session.proc.pid:
+            # **Reap it, or it is not dead enough to measure.** On POSIX a
+            # killed child stays a zombie until its parent collects it, and
+            # `os.kill(pid, 0)` succeeds on a zombie - so without this the check
+            # below fails on Linux and passes on Windows, where there is a
+            # launcher in between and this branch is not taken.
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                session.proc.wait(timeout=10)
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline and _alive(hearth_pid):
             time.sleep(0.1)
