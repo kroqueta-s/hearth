@@ -92,9 +92,16 @@ def image_to_mesh(params: dict[str, Any], progress: Progress) -> dict[str, Any]:
     load(progress)
     seconds = float(params.get("seconds", 1.0))
     steps = max(1, int(params.get("steps", 10)))
+    # **`SLEEPY_SILENT` says nothing at all while it works**, which is the only
+    # way to test the parent watchdog on its own. A runner that reports progress
+    # notices a dead parent the moment its write fails, and a runner that reads
+    # stdin notices when that closes - so with either of those in play, the
+    # watchdog could be missing and the test would still pass.
+    silent = os.environ.get("SLEEPY_SILENT", "0") == "1"
     for step in range(1, steps + 1):
         time.sleep(seconds / steps)
-        progress("shape", "sleeping", step=step, total=steps)
+        if not silent:
+            progress("shape", "sleeping", step=step, total=steps)
 
     # **Written beside its final name and renamed** (contract §9): a run killed
     # partway must not leave a half-written file that looks finished.
