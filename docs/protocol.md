@@ -81,21 +81,21 @@ to a generation safe, and it is why nothing that loads weights is one of them.
 | `ping` | — | `ok`, `pid`, `python`, `role`, `protocol` (§6). **Starts nothing**, so it is instant |
 | `status` | — | §4. **Starts no runner**: inventory and state only |
 | `capabilities` | `model` (optional) | One runner's capability table ([contract §3](runner_contract.md#3-what-capabilities-looks-like)), or every runner's when `model` is omitted. **Starting a runner to ask is cheap, but it is not free** — see §4 |
-| `cancel` | — | `{"canceled": bool, "was": name}`. §5 |
+| `cancel` | — | `{"canceled": bool, "was": name}`, or `why` when there was nothing to cancel. §5 |
 | `shutdown` | — | `{"bye": true}`, then hearth exits |
 
 ### GPU
 
 | Method | Arguments | Gives |
 |---|---|---|
-| `load` | `model` | Switch to a model and load its weights |
-| `unload` | — | Free the GPU. Reports `vram_used_gb` as the runner measured it |
+| `load` | `model` | Switch to a model and load its weights. Reports `spawn_sec` apart from the load itself, and `already: true` when it was the one already there |
+| `unload` | — | Free the GPU. Reports `vram_used_gb` as the runner measured it, `was` (the model) and `stop_sec` |
 | `text_to_image` | `prompt`, §3.1 | An image |
 | `image_to_image` | `image_path`, `prompt`, `denoise`, §3.1 | A reworked image |
 | `sketch_to_image` | `sketch_path`, `prompt`, `strength`, §3.1 | An image following a sketch |
 | `image_to_mesh` | `model`, `image_path` | A raw mesh |
 | `multi_image_to_mesh` | `model`, `image_paths` | A raw mesh from several views |
-| `texture_mesh` | `model`, `mesh_path`, `image_path` | A texture on a mesh you already have |
+| `texture_mesh` | `model`, `mesh_path`, `image_path` | A texture on a mesh you already have. **Its settings are the runner's `method_params.texture_mesh`**, not the ones `image_to_mesh` takes ([contract §3](runner_contract.md)) |
 | `selftest_long_job` | `seconds`, `interval` | Nothing. **It occupies the GPU queue and reports progress**, which is how you test that your UI survives a long job without owning a GPU |
 
 Every method takes an optional **`out_dir`**: an absolute path to write into.
@@ -132,6 +132,7 @@ back, send the next**; the client library has a helper for exactly this.
   "available": ["hunyuan3d", "trellis", "hi3dgen"],
   "known": {"trellis": {"name": "trellis", "capabilities": {}, "params": {}}},
   "image_models": {"sdxl": {"capabilities": {}, "params": {}}},
+  "default_image_model": "sdxl",
   "comfy_alive": true,
   "gpu_busy": false,
   "output_dir": "C:/.../output",
@@ -165,6 +166,21 @@ is the only thing that stops a `torch` loop reliably, so the price is fixed and
 worth stating in your UI: the cancelled request fails with `CanceledError`, and
 **the next generation with that model pays a full load again**. Between steps you
 do not need it at all — just do not send the next one.
+
+**Cancelling an image is a different thing, and costs less.** ComfyUI is another
+application, so nothing of its is killed: hearth reads its queue and takes out
+**its own prompt** — interrupting it if it is the one running, deleting it if it
+is still waiting, and doing nothing at all if it has already finished. Somebody
+else's job on that ComfyUI is never touched. The reply carries
+`image_model_reload: false`, which means what it says and no more: the *image*
+model is still loaded. **The 3D model is not** — it was unloaded to make room
+before the image began — so the next mesh step still pays a load.
+
+**A shutdown during a generation kills the runner first.** Asking it to unload
+would wait for the generation to finish, which looks like a hang; and the usual
+answer to a hang is to kill hearth, which on Windows leaves the runner alive with
+the card. Requests still queued when a shutdown starts are answered with an
+error rather than run.
 
 **Progress is counted, never estimated.** A `progress` carries `stage` and
 `message` always, `step` when it is a counted step, and `total` only when the

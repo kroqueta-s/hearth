@@ -72,6 +72,11 @@ def install_stdout_guard() -> TextIO:
     """
     fd = os.dup(sys.stdout.fileno())
     protocol = os.fdopen(fd, "w", encoding="utf-8", newline="\n", buffering=1)
+    # **fd 1 itself is redirected, not just `sys.stdout`.** A C extension writes
+    # to the file descriptor and never looks at python's object, so rebinding
+    # the name alone leaves a hole: one line from a native library lands in the
+    # middle of the protocol and the caller loses the reply it was waiting for.
+    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     sys.stdout = sys.stderr
     return protocol
 

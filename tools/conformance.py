@@ -33,7 +33,7 @@ from hearth import config  # noqa: E402
 from hearth.runner_client import RunnerError, RunnerProcess  # noqa: E402
 
 # The version of `docs/runner_contract.md` this checks against.
-CONTRACT_VERSION = 2
+CONTRACT_VERSION = 3
 
 
 class Checks:
@@ -101,6 +101,33 @@ def _check_capabilities(checks: Checks, caps: dict[str, Any]) -> None:
     for key, spec in params.items():
         if not isinstance(spec, dict) or "type" not in spec or "default" not in spec:
             checks.fail(f"param {key}", "needs at least `type` and `default` (§3)")
+
+    # **A method that is not `image_to_mesh` has settings of its own** (§3). A
+    # runner that declares one without saying what it takes leaves the caller
+    # guessing, and the guess that got made - "the same ones as image_to_mesh" -
+    # is how a mesh model's `steps` ended up being sent to a texture stage.
+    per_method = caps.get("method_params", {})
+    optional = [
+        name
+        for name in ("texture_mesh", "multi_image_to_mesh", "text_to_mesh")
+        if able.get(name, False)
+    ]
+    if not isinstance(per_method, dict):
+        checks.fail("method_params is a table", "not a dict")
+    elif contract >= 3:
+        for name in optional:
+            if name in per_method:
+                checks.ok(f"method_params for {name}", f"{len(per_method[name])} settings")
+            else:
+                checks.warn(
+                    f"method_params for {name}",
+                    "not declared, so a caller may send it no settings at all",
+                )
+    elif optional:
+        checks.warn(
+            "method_params",
+            f"contract {contract} has no such table, so {optional} take unknown settings",
+        )
 
 
 def check(name: str) -> Checks:

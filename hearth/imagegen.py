@@ -214,7 +214,11 @@ def require_alive(client: ComfyUIClient) -> None:
 
 
 def _run(
-    client: ComfyUIClient, prompt_id: str, out_dir: Path, relay: Any | None = None
+    client: ComfyUIClient,
+    prompt_id: str,
+    out_dir: Path,
+    relay: Any | None = None,
+    should_stop: Any | None = None,
 ) -> list[Path]:
     """Wait for a submitted workflow and save the images it produced into out_dir.
 
@@ -230,7 +234,12 @@ def _run(
     Raises:
         RuntimeError: If no image came out at all.
     """
-    entry = client.wait_for(prompt_id, timeout_sec=float(config.COMFY_TIMEOUT_SEC), relay=relay)
+    entry = client.wait_for(
+        prompt_id,
+        timeout_sec=float(config.COMFY_TIMEOUT_SEC),
+        relay=relay,
+        should_stop=should_stop,
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     saved: list[Path] = []
     for out in client.collect_outputs(entry):
