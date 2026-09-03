@@ -185,9 +185,17 @@ Two things about that reply are worth reading precisely.
   usually that ComfyUI had already finished it, in which case an image was
   written and then abandoned.
 - **A cancel can arrive before there is a prompt to cancel.** hearth marks
-  itself busy before submitting the workflow, because a caller asking `status`
-  in that second deserves an answer. A cancel in that window is remembered and
-  the prompt is dropped the moment it exists; `why` says so.
+  itself busy before submitting the workflow — indeed before it unloads the 3D
+  model to make room, which takes seconds — because a caller asking `status` in
+  that time deserves an answer. A cancel in that window is remembered and the
+  prompt is dropped the moment it exists; `why` says so.
+- **A request still waiting in the GPU queue cannot be cancelled at all.**
+  Nothing is busy until the queue reaches it, so `cancel` truthfully answers
+  `nothing is generating`. Measured on 2026-09-03: the window is under 50 ms for
+  an image, and a cancel at 250 ms or later always lands. A caller that sends
+  cancel programmatically the instant it sends a request — `stop()` does — may
+  fall inside it, and should treat `canceled: false` as "it may not have started
+  yet" rather than "there was nothing to stop".
 
 **A shutdown during a generation kills the runner first.** Asking it to unload
 would wait for the generation to finish, which looks like a hang; and the usual

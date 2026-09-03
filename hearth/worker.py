@@ -278,6 +278,30 @@ def _image(method: str, params: dict[str, Any], responder: Responder) -> dict[st
     # person waiting eight minutes for an image has the same right to stop it as
     # one waiting for a mesh, and `busy: null` during one is simply untrue.
     label = f"{manager.EXTERNAL_PREFIX}{model}"
+    # **Marked busy before anything slow happens, not after.** Measured against a
+    # live ComfyUI on 2026-09-03: a cancel sent a tenth of a second after the
+    # request was answered `nothing is generating` and the image went on to
+    # completion. Unloading the 3D model below takes seconds, and a person who
+    # has just pressed a button is exactly who presses cancel next. From here
+    # on, `cancel` has something to act on - and if one has already arrived,
+    # `should_stop` ends the wait at its first look.
+    MANAGER.begin_external(label)
+    try:
+        return _image_now(method, params, used, model, run_dir, client, responder)
+    finally:
+        MANAGER.end_external()
+
+
+def _image_now(  # noqa: PLR0913 - one call, and every argument is already computed
+    method: str,
+    params: dict[str, Any],
+    used: dict[str, Any],
+    model: str,
+    run_dir: Path,
+    client: comfy.ComfyUIClient,
+    responder: Responder,
+) -> dict[str, Any]:
+    """Generate one image, with the manager already told that work has begun."""
     # **The 3D model comes down before an image model goes up.** They share one
     # card; going over does not fail, it silently falls back to shared memory and
     # runs several times slower.
@@ -298,13 +322,10 @@ def _image(method: str, params: dict[str, Any], responder: Responder) -> dict[st
     }
     prompt = str(used["prompt"])
     responder.progress("image", f"generating with {model}")
-    MANAGER.begin_external(label)
     try:
         image_path = _generate_image(method, client, run_dir, prompt, params, used, shared)
     except comfy.Interrupted as exc:
         raise manager.CanceledError(str(exc)) from None
-    finally:
-        MANAGER.end_external()
 
     out: dict[str, Any] = {
         "run_dir": str(run_dir),
