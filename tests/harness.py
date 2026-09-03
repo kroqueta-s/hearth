@@ -104,8 +104,27 @@ class HearthSession:
             text=True,
             encoding="utf-8",
             bufsize=1,
+            env=self._env(),
         )
         return self
+
+    @staticmethod
+    def _env() -> dict[str, str]:
+        """The environment a test's hearth runs in.
+
+        **`HEARTH_LOCK_PORT=0` is not optional.** The default is a real port, and
+        the operator's Blender holds it whenever their hearth is up: a test would
+        then fail with `GpuBusyError` and say nothing at all about what it was
+        checking. `load_dotenv` never overwrites what is already set, so `.env`
+        is left alone.
+        """
+        return {
+            **os.environ,
+            "HEARTH_LOCK_PORT": "0",
+            "HEARTH_GPU_BUSY_PORT": "0",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUNBUFFERED": "1",
+        }
 
     def __exit__(self, *exc: object) -> None:
         self.close()

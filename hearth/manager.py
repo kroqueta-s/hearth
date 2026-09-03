@@ -17,6 +17,7 @@ through (`docs/runner_contract.md` §3).
 
 from __future__ import annotations
 
+import contextlib
 import socket
 import sys
 import threading
@@ -347,13 +348,24 @@ class Manager:
             # **Somebody else's process.** Only this prompt is taken out of
             # ComfyUI's queue; nothing is killed on the user's behalf (§6).
             dropped = ComfyUIClient().cancel_prompt(prompt_id) if prompt_id else False
+            # **The request ends either way.** `_canceling` is set above, and the
+            # route asks about it between polls of ComfyUI's history, so the wait
+            # stops within a poll whatever the queue says. What differs is
+            # whether the work itself was still in there to be taken out.
+            if not prompt_id:
+                why = "the workflow had not reached ComfyUI yet; it is dropped as it arrives"
+            elif not dropped:
+                why = "ComfyUI was no longer holding this prompt, so only the wait was stopped"
+            else:
+                why = ""
             return {
-                "canceled": bool(dropped),
+                "canceled": True,
                 "was": name,
                 # The image model's own load is not paid again. **The 3D model's
                 # is**: it was unloaded to make room before the image started.
                 "image_model_reload": False,
-                **({} if dropped else {"why": "the prompt had already finished"}),
+                "dropped_from_queue": bool(dropped),
+                **({"why": why} if why else {}),
             }
 
         if runner is None:
@@ -362,6 +374,24 @@ class Manager:
         return {"canceled": True, "was": name}
 
     # --- Internals -----------------------------------------------------------
+    def note_external_prompt(self, prompt_id: str) -> bool:
+        """Record which prompt the running image route submitted.
+
+        **The id does not exist when the work starts.** `begin_external` runs
+        before the workflow is sent, because a caller asking `status` in that
+        second deserves to be told an image is being made. So the id arrives
+        afterwards, and this is the only place it may be written - `cancel` may
+        have been asked for in between, and starting over here would forget it.
+
+        Returns:
+            Whether a cancel is already pending. **The caller must then drop the
+            prompt it has just submitted**, because nothing else is going to:
+            `cancel` has already looked and found no id to act on.
+        """
+        with self._lock:
+            self._prompt_id = prompt_id
+            return self._canceling
+
     def begin_external(self, label: str, prompt_id: str = "") -> None:
         """Mark work that is running somewhere else as the busy one.
 
@@ -375,6 +405,16 @@ class Manager:
             self._busy = label
             self._prompt_id = prompt_id
             self._canceling = False
+
+    def is_canceling(self) -> bool:
+        """Whether a cancel has been asked for and not yet taken effect.
+
+        **Asked from inside the wait on ComfyUI.** An image route polls this
+        between polls of the queue, so a cancel ends the wait in seconds rather
+        than after `COMFY_TIMEOUT_SEC`.
+        """
+        with self._lock:
+            return self._canceling
 
     def end_external(self) -> None:
         """The work somewhere else has finished."""
@@ -507,16 +547,29 @@ class Manager:
            the call lock that generation holds, so a shutdown during one looked
            like a hang - and the caller's answer to a hang is to kill hearth,
            which on Windows leaves the runner alive with the VRAM.
-        3. Then the ordinary unload, and every remaining process stopped.
+        3. **An image is stopped too, in the only way that is available.**
+           ComfyUI is another application and nothing of its is killed, but the
+           prompt is taken out of its queue and the waiting side is told to
+           stop. Leaving it would mean shutting down while still producing an
+           image nobody will collect.
+        4. Then the ordinary unload, and every remaining process stopped.
         """
         with self._lock:
             self._shutting_down = True
             busy = self._busy
-        if busy is not None:
+            prompt_id = self._prompt_id
             self._canceling = True
-            runner = self._runners.get(busy)
-            if runner is not None:
-                runner.kill()
+        if busy is not None:
+            if busy.startswith(EXTERNAL_PREFIX):
+                if prompt_id:
+                    with contextlib.suppress(Exception):
+                        # **A shutdown must not fail over an unreachable
+                        # ComfyUI.** Everything below still has to happen.
+                        ComfyUIClient().cancel_prompt(prompt_id)
+            else:
+                runner = self._runners.get(busy)
+                if runner is not None:
+                    runner.kill()
         self.unload()
         for runner in list(self._runners.values()):
             runner.stop()

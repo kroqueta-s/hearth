@@ -289,6 +289,12 @@ def _image(method: str, params: dict[str, Any], responder: Responder) -> dict[st
         "steps": int(used["image_steps"]),
         "image_model": model,
         "relay": responder.progress,
+        # **The two halves of cancelling an image.** `on_queued` tells the
+        # manager which prompt to drop - it cannot be known before the workflow
+        # is submitted - and `should_stop` is what turns a cancel into an
+        # interrupted wait rather than a lie answered instantly.
+        "on_queued": _queued(client),
+        "should_stop": MANAGER.is_canceling,
     }
     prompt = str(used["prompt"])
     responder.progress("image", f"generating with {model}")
@@ -318,6 +324,23 @@ def _image(method: str, params: dict[str, Any], responder: Responder) -> dict[st
         out["source_path"] = str(params[source])
         out["source_argument"] = source
     return out
+
+
+
+def _queued(client: comfy.ComfyUIClient) -> Any:
+    """Tell the manager which prompt is running, and act on a cancel that raced.
+
+    A cancel asked for while the workflow was still being submitted found no id
+    to act on and could only set the flag. **Somebody has to take the prompt out
+    of the queue**, and by the time it exists this is the only code that knows
+    about it.
+    """
+
+    def queued(prompt_id: str) -> None:
+        if MANAGER.note_external_prompt(prompt_id) and prompt_id:
+            client.cancel_prompt(prompt_id)
+
+    return queued
 
 
 def _generate_image(  # noqa: PLR0913 - one call per route, and they differ
@@ -389,7 +412,10 @@ def m_selftest_long_job(params: dict[str, Any], responder: Responder) -> dict[st
     (`docs/protocol.md` §2).
 
     Args:
-        params: `seconds` (default 10) and `interval` between reports.
+        params: `seconds` (default 10), `interval` between reports, and
+            `poison_fd1` - write one line of rubbish straight to file
+            descriptor 1, the way a C extension does. **The reply has to survive
+            it**, which is the whole point of the stdout guard.
         responder: Where progress goes.
 
     Returns:
@@ -397,6 +423,10 @@ def m_selftest_long_job(params: dict[str, Any], responder: Responder) -> dict[st
     """
     seconds = float(params.get("seconds", 10))
     interval = max(0.05, float(params.get("interval", 1.0)))
+    if params.get("poison_fd1"):
+        # Bypasses `sys.stdout` entirely, which is exactly what makes this worth
+        # testing: no Python-level replacement can catch it.
+        os.write(1, b"not json, straight to fd 1\n")
     # The count is known here, so it is reported: a total that is real is the
     # only kind allowed (`docs/runner_contract.md` §8).
     total = max(1, int(seconds / interval))

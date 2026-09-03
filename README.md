@@ -136,10 +136,13 @@ The image methods need ComfyUI. The mesh methods do not.
 
 **Stopping is as much a promise as starting.** A `shutdown` during a generation
 kills that runner rather than waiting for it, requests still queued are answered
-with an error instead of starting a runner nobody is left to stop, and cancelling
-an image takes hearth's own prompt out of ComfyUI's queue without touching
-anybody else's. `tests/test_shutdown.py` holds all of that, with a runner that
-sleeps instead of a model.
+with an error instead of starting a runner nobody is left to stop, and a runner
+whose hearth crashes outright ends itself rather than sitting on the card.
+Cancelling an image ends the wait on ComfyUI within a poll and takes hearth's own
+prompt out of its queue without touching anybody else's.
+`tests/test_shutdown.py` holds the first three with a runner that sleeps, and
+`tests/test_comfy_wait.py` the last with a ComfyUI that never finishes anything -
+**neither needs a model or a graphics card.**
 
 **Requests do not all wait for each other.** Generating is queued and serial -
 there is one GPU - but `status`, `capabilities` and `cancel` are answered **while
@@ -188,10 +191,16 @@ matching the contract**.
 .venv\Scripts\python.exe tests\test_config.py            # the rules that keep hearth a relay
 .venv\Scripts\python.exe tests\test_protocol.py          # hearth answers as docs/protocol.md says
 .venv\Scripts\python.exe tests\test_template_runner.py   # the template obeys the contract
+.venv\Scripts\python.exe tests\test_shutdown.py          # nothing is left holding the card
+.venv\Scripts\python.exe tests\test_comfy_wait.py        # cancelling an image ends the wait
 .venv\Scripts\python.exe tests\test_model_switch.py      # switching models, on real hardware
 ```
 
-The first three need nothing but the install - **no GPU, no runner, no ComfyUI**.
+**All but the last need nothing but the install** - no GPU, no runner, no
+ComfyUI. `test_shutdown.py` uses a runner that sleeps, and `test_comfy_wait.py`
+a stand-in for ComfyUI that never finishes anything, which is what makes the
+cancel measurable at all. They set `HEARTH_LOCK_PORT=0`, so they run while the
+operator's own hearth holds the real one.
 `test_protocol.py` uses `selftest_long_job`, which occupies the GPU queue without
 a GPU, to check the thing that is easiest to break by accident: **that control
 methods are still answered while a generation runs**.

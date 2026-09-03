@@ -21,3 +21,11 @@ jobs:
       # **The template is started and talked to for real**, so it cannot drift
       # away from the contract unnoticed.
       - run: python tests/test_template_runner.py
+      # **Nothing may be left holding the card.** A runner that sleeps stands in
+      # for a model, so the whole shutdown story runs here: no GPU, no weights.
+      - run: python tests/test_shutdown.py
+      # **Cancelling an image ends the wait.** A stand-in ComfyUI that never
+      # finishes anything is what makes that measurable without ComfyUI.
+      - run: python tests/test_comfy_wait.py
+      # hearth answers as docs/protocol.md says, using `selftest_long_job`.
+      - run: python tests/test_protocol.py

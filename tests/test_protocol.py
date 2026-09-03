@@ -193,6 +193,27 @@ def test_shutdown_is_answered_and_ends_it() -> None:
     assert not hearth.is_running(), "hearth is still running after shutdown"
 
 
+def test_a_write_straight_to_fd_1_does_not_reach_the_protocol() -> None:
+    """§1: **replacing `sys.stdout` is not enough.**
+
+    A C extension writes to the file descriptor, past every Python object in
+    the way: measured in a sibling repository, `pymeshfix` emitted `Loading
+    ..0%` hundreds of times that way. One such line in the middle of the stream
+    is a parse error the caller cannot explain and cannot recover from, so file
+    descriptor 1 itself is pointed at stderr and the protocol keeps a duplicate.
+    """
+    with _hearth() as hearth:
+        result = hearth.call(
+            "selftest_long_job",
+            {"seconds": 0.4, "interval": 0.1, "poison_fd1": True},
+            timeout=60,
+        )
+        assert result["steps"] >= 1, result
+        # **It has to keep working afterwards.** A guard that survives one line
+        # and then leaves the stream misaligned is no guard at all.
+        assert hearth.call("ping", timeout=30)["ok"] is True
+
+
 def main() -> int:
     """Run every test."""
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
