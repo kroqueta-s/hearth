@@ -106,7 +106,7 @@ def image_to_mesh(params: dict[str, Any], progress: Progress) -> dict[str, Any]:
     # **Written beside its final name and renamed** (contract §9): a run killed
     # partway must not leave a half-written file that looks finished.
     mesh_path = out_dir / "raw.ply"
-    staging = out_dir / "raw.ply.tmp"
+    staging = out_dir / "raw.ply.part"
     staging.write_text(_PLY, encoding="ascii")
     os.replace(staging, mesh_path)
 

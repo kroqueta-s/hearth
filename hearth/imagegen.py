@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,6 @@ from PIL import Image
 
 from . import config
 from .comfy import ComfyUIClient
-
 
 # --- What the image side can do, **as data** ----------------------------------
 #
@@ -227,12 +227,17 @@ def _run(
         prompt_id: What `queue_prompt` returned.
         out_dir: Where to save.
         relay: Where heartbeats go while ComfyUI works.
+        should_stop: Asked between polls. **This is what makes an image
+            cancellable at all**: without it the wait blocks for up to
+            `COMFY_TIMEOUT_SEC`, and a caller that asked to stop is told
+            nothing is running.
 
     Returns:
         The saved paths, in the order they were produced.
 
     Raises:
         RuntimeError: If no image came out at all.
+        comfy.Interrupted: If `should_stop` said so.
     """
     entry = client.wait_for(
         prompt_id,
@@ -246,7 +251,12 @@ def _run(
         if Path(out.filename).suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
             continue
         dest = out_dir / out.filename
-        dest.write_bytes(client.download(out))
+        # **Written beside its final name and renamed** (contract §9). A cancel
+        # can land mid-download, and a truncated PNG under the finished name is
+        # read by the next step without complaint.
+        staging = dest.with_suffix(dest.suffix + ".part")
+        staging.write_bytes(client.download(out))
+        os.replace(staging, dest)
         saved.append(dest)
     if not saved:
         raise RuntimeError("no image was produced (check the workflow SaveImage node)")
@@ -292,6 +302,8 @@ def text_to_image(
     height: int = 1024,
     image_model: str | None = None,
     relay: Any | None = None,
+    on_queued: Any | None = None,
+    should_stop: Any | None = None,
 ) -> Path:
     """Generate one image from a text prompt, save it, and return its path."""
     spec, workflow = _spec(image_model, "txt2img")
@@ -307,7 +319,13 @@ def text_to_image(
             ("5", "height", height),
         ],
     )
-    return _run(client, client.queue_prompt(wf), out_dir, relay)[0]
+    # **The id has to reach the caller before the wait starts.** Cancelling an
+    # image means asking ComfyUI to drop *this* prompt, and until somebody knows
+    # which one that is there is nothing to ask for.
+    prompt_id = client.queue_prompt(wf)
+    if on_queued is not None:
+        on_queued(prompt_id)
+    return _run(client, prompt_id, out_dir, relay, should_stop)[0]
 
 
 def sketch_to_image(
@@ -323,6 +341,8 @@ def sketch_to_image(
     max_dim: int = 1024,
     image_model: str | None = None,
     relay: Any | None = None,
+    on_queued: Any | None = None,
+    should_stop: Any | None = None,
 ) -> Path:
     """Generate one image from a sketch plus a prompt, save it, and return its path."""
     spec, workflow = _spec(image_model, "controlnet")
@@ -343,7 +363,13 @@ def sketch_to_image(
             ("13", "strength", strength),
         ],
     )
-    return _run(client, client.queue_prompt(wf), out_dir, relay)[0]
+    # **The id has to reach the caller before the wait starts.** Cancelling an
+    # image means asking ComfyUI to drop *this* prompt, and until somebody knows
+    # which one that is there is nothing to ask for.
+    prompt_id = client.queue_prompt(wf)
+    if on_queued is not None:
+        on_queued(prompt_id)
+    return _run(client, prompt_id, out_dir, relay, should_stop)[0]
 
 
 def image_to_image(
@@ -359,6 +385,8 @@ def image_to_image(
     max_dim: int = 1024,
     image_model: str | None = None,
     relay: Any | None = None,
+    on_queued: Any | None = None,
+    should_stop: Any | None = None,
 ) -> Path:
     """Generate one image from an input image plus a prompt, save it, and return its path."""
     spec, workflow = _spec(image_model, "img2img")
@@ -376,7 +404,13 @@ def image_to_image(
             ("3", "denoise", denoise),
         ],
     )
-    return _run(client, client.queue_prompt(wf), out_dir, relay)[0]
+    # **The id has to reach the caller before the wait starts.** Cancelling an
+    # image means asking ComfyUI to drop *this* prompt, and until somebody knows
+    # which one that is there is nothing to ask for.
+    prompt_id = client.queue_prompt(wf)
+    if on_queued is not None:
+        on_queued(prompt_id)
+    return _run(client, prompt_id, out_dir, relay, should_stop)[0]
 
 
 def _stage_input(src: Path, out_dir: Path, name: str, max_dim: int) -> tuple[int, int, Path]:

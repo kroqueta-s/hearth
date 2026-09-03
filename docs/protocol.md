@@ -176,6 +176,19 @@ else's job on that ComfyUI is never touched. The reply carries
 model is still loaded. **The 3D model is not** — it was unloaded to make room
 before the image began — so the next mesh step still pays a load.
 
+Two things about that reply are worth reading precisely.
+
+- **`canceled: true` means the request ends, not that ComfyUI was still holding
+  the prompt.** The waiting side is asked to stop between polls, so it stops
+  either way and the caller gets `CanceledError`. `dropped_from_queue` says
+  whether the work itself was taken out; when it is false, `why` says why —
+  usually that ComfyUI had already finished it, in which case an image was
+  written and then abandoned.
+- **A cancel can arrive before there is a prompt to cancel.** hearth marks
+  itself busy before submitting the workflow, because a caller asking `status`
+  in that second deserves an answer. A cancel in that window is remembered and
+  the prompt is dropped the moment it exists; `why` says so.
+
 **A shutdown during a generation kills the runner first.** Asking it to unload
 would wait for the generation to finish, which looks like a hang; and the usual
 answer to a hang is to kill hearth, which on Windows leaves the runner alive with
@@ -204,6 +217,15 @@ is worth branching on; the message is for a person.
 | `FileNotFoundError` | An input, a weight, or a repository is missing | Show the path |
 | `ValueError` | An unknown argument or a value out of range | Show it verbatim; it names the argument |
 | `RuntimeError` | Generation failed, or ComfyUI is not running | Show the message |
+
+**One hearth at a time, and it says so rather than fighting.** hearth holds a
+local port while it owns the card - `HEARTH_LOCK_PORT`, **8011 by default** - and
+a second hearth started against the same card answers `GpuBusyError` naming that
+port instead of loading a model beside the first one. Two model loads on one card
+do not fail; they fall back to shared memory and run several times slower, which
+is the kind of failure nobody attributes to its cause. **Set it to 0 to disable
+the lock**, which is what a test does so it can run while the operator's own
+hearth is up.
 
 **If hearth dies, every outstanding request dies with it.** Nothing will answer
 them, so a caller must notice the process is gone and fail them itself, with the

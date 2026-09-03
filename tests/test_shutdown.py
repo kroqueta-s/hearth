@@ -291,7 +291,10 @@ def test_a_mesh_is_never_left_half_written() -> None:
         )
         assert kind == "result", out
         assert Path(out["mesh_path"]).is_file(), out
-        leftovers = list(out_dir.glob("*.tmp"))
+        # **Both spellings.** The real runners write `.part`; anything that
+        # writes `.tmp` is doing the same thing under another name, and a test
+        # that only knows one of them would miss the other's leftovers.
+        leftovers = [p for p in out_dir.iterdir() if p.suffix in (".part", ".tmp")]
         assert not leftovers, f"staging files were left behind: {leftovers}"
     finally:
         session.kill()
