@@ -73,8 +73,10 @@ GPU_BUSY_PORT: int = _int("HEARTH_GPU_BUSY_PORT", 0)
 # hearth (a second Blender window, or a command line next to a running one)
 # discovers the first instead of quietly loading a second model into the same
 # card. **It must not be the port above**: that one belongs to another
-# application. Zero disables it, at the cost of nothing detecting that case.
-LOCK_PORT: int = _int("HEARTH_LOCK_PORT", 0)
+# application. Zero disables it, at the cost of nothing detecting that case -
+# and the case is real, so this is on by default. **Tests set it to zero**, or
+# they would refuse to run whenever a real hearth is up.
+LOCK_PORT: int = _int("HEARTH_LOCK_PORT", 8011)
 
 # The version of `docs/protocol.md` this hearth speaks. **A constant, not
 # configuration**: it describes the code, so it is not something to set in .env.

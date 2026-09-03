@@ -39,6 +39,15 @@ class OutputFile:
     kind: str  # A key of the outputs dict: "images", "gifs", "3d", "meshes", ...
 
 
+class Interrupted(RuntimeError):
+    """The caller asked for this prompt to stop.
+
+    A type of its own so that `worker` can tell it from a real failure and
+    report it as `CanceledError` (`docs/protocol.md` §6). It lives here rather
+    than in `manager` because importing that from here would be a cycle.
+    """
+
+
 @dataclass
 class ComfyUIClient:
     base_url: str = config.COMFY_BASE_URL
@@ -55,6 +64,48 @@ class ComfyUIClient:
             return r.status_code == 200
         except httpx.HTTPError:
             return False
+
+    def cancel_prompt(self, prompt_id: str) -> bool:
+        """Take one prompt out of ComfyUI's queue, and **only that one**.
+
+        ComfyUI is another application with other clients. `POST /interrupt`
+        stops **whatever is running now**, which is not necessarily ours: if our
+        prompt is still queued behind somebody else's, interrupting would kill
+        their work and leave ours to run. hearth does not kill anything on a
+        user's behalf (`docs/protocol.md` §6), and that holds for other people's
+        jobs as much as for other processes.
+
+        So the queue is read first:
+
+        - running, and it is ours: `interrupt`;
+        - still pending: delete it from the queue by id;
+        - neither: it has already finished, and there is nothing to cancel.
+
+        Args:
+            prompt_id: What `queue_prompt` returned.
+
+        Returns:
+            Whether anything was actually taken out.
+        """
+        try:
+            queue = httpx.get(self._url("queue"), timeout=self.timeout_sec).json()
+        except (httpx.HTTPError, ValueError):
+            return False
+        if any(str(prompt_id) in str(entry) for entry in queue.get("queue_running", [])):
+            try:
+                httpx.post(self._url("interrupt"), timeout=self.timeout_sec)
+            except httpx.HTTPError:
+                return False
+            return True
+        if any(str(prompt_id) in str(entry) for entry in queue.get("queue_pending", [])):
+            try:
+                httpx.post(
+                    self._url("queue"), json={"delete": [prompt_id]}, timeout=self.timeout_sec
+                )
+            except httpx.HTTPError:
+                return False
+            return True
+        return False
 
     def system_stats(self) -> dict[str, Any]:
         r = httpx.get(self._url("system_stats"), timeout=self.timeout_sec)
@@ -118,6 +169,7 @@ class ComfyUIClient:
         poll_sec: float = 1.5,
         relay: Any | None = None,
         heartbeat_sec: float = 5.0,
+        should_stop: Any | None = None,
     ) -> dict[str, Any]:
         """Poll until the prompt_id appears in the history, and return that entry.
 
@@ -135,11 +187,22 @@ class ComfyUIClient:
             poll_sec: How often to ask.
             relay: Where heartbeats go. `(stage, message)`.
             heartbeat_sec: How often to send one.
+            should_stop: Asked between polls. **This is what makes an image
+                cancellable**: the prompt has already been taken out of
+                ComfyUI's queue, so continuing to wait for it would be waiting
+                for something that will never arrive.
+
+        Raises:
+            Interrupted: If `should_stop` says so.
+            ComfyUIExecutionError: If the workflow failed.
+            TimeoutError: If it never finished.
         """
         deadline = time.monotonic() + timeout_sec
         started = time.monotonic()
         last_beat = started
         while time.monotonic() < deadline:
+            if should_stop is not None and should_stop():
+                raise Interrupted(f"prompt {prompt_id} was cancelled")
             if relay is not None and time.monotonic() - last_beat >= heartbeat_sec:
                 last_beat = time.monotonic()
                 relay("image", f"ComfyUI is working ({int(last_beat - started)}s elapsed)")

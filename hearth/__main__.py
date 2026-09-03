@@ -49,6 +49,11 @@ def _serve_gpu() -> None:
         if item is None:  # Shutting down.
             return
         request, channel = item
+        if MANAGER.shutting_down:
+            # **Answered, not run.** Starting a runner now would leave one
+            # behind: `shutdown` has already taken its list of them.
+            channel.responder(request.id).error(RuntimeError("hearth is shutting down"))
+            continue
         handle(request, channel.responder(request.id))
 
 
@@ -78,9 +83,12 @@ def main() -> int:
             else:
                 _GPU_QUEUE.put((request, channel))
     finally:
-        _GPU_QUEUE.put(None)
-        # **Leave no runner behind.** One that outlives hearth keeps the VRAM.
+        # **The order is the point.** `shutdown` raises the flag first, so the
+        # requests still in the queue are answered with an error instead of
+        # starting runners nobody would be left to stop.
         MANAGER.shutdown()
+        _GPU_QUEUE.put(None)
+        gpu_thread.join(timeout=2.0)
 
     print("[hearth] exiting.", file=sys.stderr)
     return 0

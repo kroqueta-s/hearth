@@ -63,6 +63,10 @@ class RunnerProcess:
         # answered on another thread (`docs/protocol.md` §2), and two requests
         # interleaving their lines on one pipe is not protocol.
         self._call_lock = threading.Lock()
+        # **Two threads reach here.** `capabilities` is answered on the control
+        # thread while the GPU thread generates, and both may find the process
+        # stopped; without this they would each start one.
+        self._start_lock = threading.Lock()
 
     def is_running(self) -> bool:
         """Whether the process is alive."""
@@ -74,6 +78,11 @@ class RunnerProcess:
         Raises:
             RunnerError: If the configuration is incomplete or the python is missing.
         """
+        with self._start_lock:
+            self._start()
+
+    def _start(self) -> None:
+        """Start it, with the start lock already held."""
         if self.is_running():
             return
         python = Path(self._spec.get("python", ""))
@@ -123,7 +132,7 @@ class RunnerProcess:
         """End the process now, without asking it to stop.
 
         **This is how a generation is cancelled** (`docs/runner_contract.md`
-        §10): a torch loop does not check for anything, so ending the process is
+        §9): a torch loop does not check for anything, so ending the process is
         the only thing that stops it and the only thing that reliably returns the
         VRAM. A `call` waiting on this process fails as soon as its stdout
         closes.

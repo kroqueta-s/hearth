@@ -386,6 +386,12 @@ class Flow:
     # What one step's result is called on the way into the next step's arguments.
     CARRIES = ("image_path", "mesh_path")
 
+    # Which argument each route consumes its input under. **A route that takes a
+    # sketch does not take `image_path`**, so carrying the previous image in
+    # under that name would send it nowhere and the step would fail for want of
+    # an input it was given.
+    CONSUMES = {"sketch_to_image": "sketch_path"}
+
     def __init__(self, hearth: Hearth, steps: list[dict[str, Any]]) -> None:
         self.hearth = hearth
         self.steps = list(steps)
@@ -415,15 +421,25 @@ class Flow:
             method = str(step["method"])
             params = dict(step.get("params") or {})
             if self.results:
-                self._carry(self.results[-1], params)
+                self._carry(self.results[-1], params, method)
             result = self.hearth.call(method, params, on_progress=on_progress)
             self.results.append(result)
             if on_step is not None:
                 on_step(index, method, result)
         return self.results
 
-    def _carry(self, previous: dict[str, Any], params: dict[str, Any]) -> None:
-        """Fill this step's inputs in from the last step's outputs."""
+    def _carry(self, previous: dict[str, Any], params: dict[str, Any], method: str = "") -> None:
+        """Fill this step's inputs in from the last step's outputs.
+
+        **An image goes in under the name the route consumes it as.** For
+        `sketch_to_image` that is `sketch_path`; everything else takes it as
+        `image_path`. Getting this wrong is quiet: the step runs, and the
+        argument it was handed is simply not the one it reads.
+        """
+        renamed = self.CONSUMES.get(method, "")
         for key in self.CARRIES:
-            if key in previous and key not in params:
-                params[key] = previous[key]
+            if key not in previous:
+                continue
+            target = renamed if (key == "image_path" and renamed) else key
+            if target not in params:
+                params[target] = previous[key]

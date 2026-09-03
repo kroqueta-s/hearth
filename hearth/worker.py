@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import config, imagegen
+from . import comfy, config, imagegen, manager
 from .comfy import ComfyUIClient
 from .manager import CanceledError, GpuBusyError, Manager, assert_gpu_free
 from .rpc import Request, Responder
@@ -71,6 +71,25 @@ def m_ping(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
     }
 
 
+# What `is_alive` last said, and when. **The control thread is the one reading
+# stdin** (`__main__.py`), so three seconds spent asking ComfyUI is three seconds
+# in which a `cancel` is not read. A caller polls `status` every few seconds
+# while a job runs, and the answer does not change that fast.
+_COMFY_CACHE: tuple[float, bool] = (0.0, False)
+_COMFY_CACHE_SEC = 10.0
+
+
+def _comfy_alive() -> bool:
+    """Whether ComfyUI is up, asked at most every ten seconds."""
+    global _COMFY_CACHE  # noqa: PLW0603 - one cache, and it belongs to this module
+    now = time.monotonic()
+    when, alive = _COMFY_CACHE
+    if now - when > _COMFY_CACHE_SEC:
+        alive = ComfyUIClient().is_alive()
+        _COMFY_CACHE = (now, alive)
+    return alive
+
+
 def m_status(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
     """Report what is installed and what state it is in. **This starts nothing.**
 
@@ -86,7 +105,7 @@ def m_status(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
         "known": MANAGER.known_capabilities(),
         "image_models": imagegen.all_capabilities(),
         "default_image_model": config.DEFAULT_IMAGE_MODEL,
-        "comfy_alive": ComfyUIClient().is_alive(),
+        "comfy_alive": _comfy_alive(),
         "gpu_busy": _gpu_busy(),
         "output_dir": str(config.OUTPUT_DIR),
         "protocol": config.PROTOCOL_VERSION,
@@ -109,7 +128,7 @@ def m_capabilities(params: dict[str, Any], responder: Responder) -> dict[str, An
 def m_cancel(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
     """End the generation that is running, by ending its runner's process.
 
-    **The weights go with it** (`docs/runner_contract.md` §10), so the next
+    **The weights go with it** (`docs/runner_contract.md` §9), so the next
     generation with that model pays a full load. The cancelled request answers
     with `CanceledError`.
     """
@@ -251,6 +270,11 @@ def _image(method: str, params: dict[str, Any], responder: Responder) -> dict[st
     run_dir = _run_dir(params)
     client = ComfyUIClient()
     imagegen.require_alive(client)
+    # **An image is busy too.** It is somebody else's process, so `cancel` takes
+    # the prompt out of ComfyUI's queue rather than killing anything (§5); but a
+    # person waiting eight minutes for an image has the same right to stop it as
+    # one waiting for a mesh, and `busy: null` during one is simply untrue.
+    label = f"{manager.EXTERNAL_PREFIX}{model}"
     # **The 3D model comes down before an image model goes up.** They share one
     # card; going over does not fail, it silently falls back to shared memory and
     # runs several times slower.
@@ -265,33 +289,13 @@ def _image(method: str, params: dict[str, Any], responder: Responder) -> dict[st
     }
     prompt = str(used["prompt"])
     responder.progress("image", f"generating with {model}")
-    if method == "text_to_image":
-        image_path = imagegen.text_to_image(
-            client,
-            run_dir,
-            prompt,
-            width=int(used["width"]),
-            height=int(used["height"]),
-            **shared,
-        )
-    elif method == "image_to_image":
-        image_path = imagegen.image_to_image(
-            client,
-            run_dir,
-            Path(str(params["image_path"])),
-            prompt,
-            denoise=float(used["denoise"]),
-            **shared,
-        )
-    else:
-        image_path = imagegen.sketch_to_image(
-            client,
-            run_dir,
-            Path(str(params["sketch_path"])),
-            prompt,
-            strength=float(used["strength"]),
-            **shared,
-        )
+    MANAGER.begin_external(label)
+    try:
+        image_path = _generate_image(method, client, run_dir, prompt, params, used, shared)
+    except comfy.Interrupted as exc:
+        raise manager.CanceledError(str(exc)) from None
+    finally:
+        MANAGER.end_external()
 
     out: dict[str, Any] = {
         "run_dir": str(run_dir),
@@ -305,6 +309,44 @@ def _image(method: str, params: dict[str, Any], responder: Responder) -> dict[st
     if source:
         out[source] = str(params[source])
     return out
+
+
+def _generate_image(  # noqa: PLR0913 - one call per route, and they differ
+    method: str,
+    client: ComfyUIClient,
+    run_dir: Path,
+    prompt: str,
+    params: dict[str, Any],
+    used: dict[str, Any],
+    shared: dict[str, Any],
+) -> Path:
+    """Run the route ComfyUI was asked for, and hand back the image it wrote."""
+    if method == "text_to_image":
+        return imagegen.text_to_image(
+            client,
+            run_dir,
+            prompt,
+            width=int(used["width"]),
+            height=int(used["height"]),
+            **shared,
+        )
+    if method == "image_to_image":
+        return imagegen.image_to_image(
+            client,
+            run_dir,
+            Path(str(params["image_path"])),
+            prompt,
+            denoise=float(used["denoise"]),
+            **shared,
+        )
+    return imagegen.sketch_to_image(
+        client,
+        run_dir,
+        Path(str(params["sketch_path"])),
+        prompt,
+        strength=float(used["strength"]),
+        **shared,
+    )
 
 
 def m_text_to_image(params: dict[str, Any], responder: Responder) -> dict[str, Any]:

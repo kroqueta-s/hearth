@@ -134,6 +134,13 @@ that is the only thing that knows whether they are about to look
 
 The image methods need ComfyUI. The mesh methods do not.
 
+**Stopping is as much a promise as starting.** A `shutdown` during a generation
+kills that runner rather than waiting for it, requests still queued are answered
+with an error instead of starting a runner nobody is left to stop, and cancelling
+an image takes hearth's own prompt out of ComfyUI's queue without touching
+anybody else's. `tests/test_shutdown.py` holds all of that, with a runner that
+sleeps instead of a model.
+
 **Requests do not all wait for each other.** Generating is queued and serial -
 there is one GPU - but `status`, `capabilities` and `cancel` are answered **while
 a generation is running**, which is what lets an interface stay usable during one.

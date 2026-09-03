@@ -18,12 +18,17 @@ through (`docs/runner_contract.md` §3).
 from __future__ import annotations
 
 import socket
+import sys
 import threading
 import time
 from typing import Any
 
 from . import config
+from .comfy import ComfyUIClient
 from .runner_client import Relay, RunnerError, RunnerProcess
+
+# What `busy` is called while the work is in another application's process.
+EXTERNAL_PREFIX = "image:"
 
 
 class GpuBusyError(RuntimeError):
@@ -31,7 +36,7 @@ class GpuBusyError(RuntimeError):
 
 
 class CanceledError(RuntimeError):
-    """The request was cancelled by the caller (`docs/runner_contract.md` §10)."""
+    """The request was cancelled by the caller (`docs/runner_contract.md` §9)."""
 
 
 def assert_gpu_free() -> None:
@@ -60,6 +65,35 @@ def assert_gpu_free() -> None:
         )
 
 
+def _contract_shape(name: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Bring an older runner's result up to contract §5, and no further.
+
+    Exactly one thing is repaired: a runner written against the earlier wording
+    reports `params` where the contract says `params_used`. That is a rename, so
+    promoting it invents nothing.
+
+    **The axes are not repaired.** A runner that does not say which way is up
+    has not told anyone, and filling in `"z"` would turn "unknown" into
+    "known and possibly wrong" - which is worse, because the mistake it hides is
+    invisible: a mesh imported on the wrong axis renders perfectly correctly.
+    The absence travels downstream, and `forge` says so.
+    """
+    if "params_used" not in result and isinstance(result.get("params"), dict):
+        print(
+            f"[hearth] {name}: reports `params` where the contract says `params_used` "
+            "(runner_contract.md §5)",
+            file=sys.stderr,
+        )
+        result = {**result, "params_used": result["params"]}
+    if "up_axis" not in result:
+        print(
+            f"[hearth] {name}: reports no `up_axis` (runner_contract.md §5). "
+            "Passing it on as unknown rather than guessing",
+            file=sys.stderr,
+        )
+    return result
+
+
 class Manager:
     """Supervises the runners. **All the state lives here.**"""
 
@@ -68,9 +102,23 @@ class Manager:
         self._capabilities: dict[str, dict[str, Any]] = {}
         self._loaded: str | None = None
         self._busy: str | None = None
+        # The ComfyUI prompt an image route is waiting on, so that cancelling
+        # takes out **that one** and not whatever else is running there.
+        self._prompt_id = ""
         self._canceling = False
+        # **Set once, and never unset.** While it is true nothing new may be
+        # loaded or generated: a request already in the GPU queue would start a
+        # runner that hearth is about to stop caring about, and on Windows that
+        # runner outlives it holding the card.
+        self._shutting_down = False
         self._lock = threading.RLock()
         self._gpu_claim: socket.socket | None = None
+
+    @property
+    def shutting_down(self) -> bool:
+        """Whether hearth is on its way out."""
+        with self._lock:
+            return self._shutting_down
 
     # --- Inventory and capabilities -----------------------------------------
     def available(self) -> list[str]:
@@ -162,6 +210,7 @@ class Manager:
             CanceledError: If the caller cancelled while it was loading.
             RunnerError: If the runner is unknown or loading failed.
         """
+        self._refuse_if_shutting_down()
         assert_gpu_free()
         with self._lock:
             self._forget_dead()
@@ -256,6 +305,7 @@ class Manager:
             CanceledError: If the caller cancelled it.
             RunnerError: If the runner does not support the method, or failed.
         """
+        self._refuse_if_shutting_down()
         caps = self.capabilities(name).get("capabilities", {})
         if not caps.get(method, False):
             raise RunnerError(f"{name} does not support {method} (check its capabilities)")
@@ -274,12 +324,12 @@ class Manager:
             raise
         finally:
             self._end()
-        return {"model": name, **result}
+        return {"model": name, **_contract_shape(name, result)}
 
     def cancel(self) -> dict[str, Any]:
         """End whatever is generating right now, by ending its process.
 
-        **There is no gentler way** (`docs/runner_contract.md` §10). The price is
+        **There is no gentler way** (`docs/runner_contract.md` §9). The price is
         that the weights go with it and the next generation pays a full load.
 
         Returns:
@@ -287,32 +337,70 @@ class Manager:
         """
         with self._lock:
             name = self._busy
+            prompt_id = self._prompt_id
             if name is None:
                 return {"canceled": False, "why": "nothing is generating"}
             self._canceling = True
             runner = self._runners.get(name)
+
+        if name.startswith(EXTERNAL_PREFIX):
+            # **Somebody else's process.** Only this prompt is taken out of
+            # ComfyUI's queue; nothing is killed on the user's behalf (§6).
+            dropped = ComfyUIClient().cancel_prompt(prompt_id) if prompt_id else False
+            return {
+                "canceled": bool(dropped),
+                "was": name,
+                # The image model's own load is not paid again. **The 3D model's
+                # is**: it was unloaded to make room before the image started.
+                "image_model_reload": False,
+                **({} if dropped else {"why": "the prompt had already finished"}),
+            }
+
         if runner is None:
             return {"canceled": False, "why": "nothing is generating"}
         runner.kill()
         return {"canceled": True, "was": name}
 
     # --- Internals -----------------------------------------------------------
+    def begin_external(self, label: str, prompt_id: str = "") -> None:
+        """Mark work that is running somewhere else as the busy one.
+
+        ComfyUI is another application: hearth does not own its process and
+        cannot kill it. But the person waiting has no way to know that, and
+        `cancel` answering "nothing is generating" during an eight-minute image
+        is the same lie either way. So an image route marks itself busy, and
+        `cancel` asks ComfyUI to drop **that prompt** (§5).
+        """
+        with self._lock:
+            self._busy = label
+            self._prompt_id = prompt_id
+            self._canceling = False
+
+    def end_external(self) -> None:
+        """The work somewhere else has finished."""
+        with self._lock:
+            self._busy = None
+            self._prompt_id = ""
+            self._canceling = False
+
     def _begin(self, name: str) -> None:
         """Mark a runner as the one holding the GPU, and therefore cancellable."""
         with self._lock:
             self._busy = name
+            self._prompt_id = ""
             self._canceling = False
 
     def _end(self) -> None:
         """It is no longer holding the GPU."""
         with self._lock:
             self._busy = None
+            self._prompt_id = ""
             self._canceling = False
 
     def _canceled_instead(self, what: str) -> CanceledError | None:
         """Was this runner's death a cancellation we asked for?
 
-        **A cancel ends the process** (`docs/runner_contract.md` §10), so it
+        **A cancel ends the process** (`docs/runner_contract.md` §9), so it
         reaches the caller as the runner having died. Telling the two apart is
         the difference between an error a person should read and one they asked
         for.
@@ -395,9 +483,41 @@ class Manager:
         if sock is not None:
             sock.close()
 
+    def _refuse_if_shutting_down(self) -> None:
+        """Raise if hearth is on its way out.
+
+        Raises:
+            RunnerError: Always, when shutting down. **A request that arrives
+                too late is answered**, rather than starting a process nobody
+                will be left to stop.
+        """
+        if self.shutting_down:
+            raise RunnerError("hearth is shutting down")
+
     def shutdown(self) -> None:
-        """End every runner."""
+        """End every runner. **Nothing may be left holding the card.**
+
+        The order matters, and it is the whole of the fix for the failure this
+        method used to cause:
+
+        1. **The flag first.** A queued `load` or generation would otherwise
+           start a runner while this is running, and that runner is not in the
+           list below.
+        2. **A running generation is killed, not asked.** `unload` would wait on
+           the call lock that generation holds, so a shutdown during one looked
+           like a hang - and the caller's answer to a hang is to kill hearth,
+           which on Windows leaves the runner alive with the VRAM.
+        3. Then the ordinary unload, and every remaining process stopped.
+        """
+        with self._lock:
+            self._shutting_down = True
+            busy = self._busy
+        if busy is not None:
+            self._canceling = True
+            runner = self._runners.get(busy)
+            if runner is not None:
+                runner.kill()
         self.unload()
-        for runner in self._runners.values():
+        for runner in list(self._runners.values()):
             runner.stop()
         self._release_gpu()

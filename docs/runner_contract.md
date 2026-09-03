@@ -37,7 +37,7 @@ One JSON object per line, UTF-8, over stdin and stdout.
 
 | Method | Arguments | Returns | Notes |
 |---|---|---|---|
-| `capabilities` | — | §3 | **Answer without loading the model.** hearth calls it at startup |
+| `capabilities` | — | §3 | **Answer without loading the model.** hearth calls it when a caller chooses this model, not at startup ([protocol §4](protocol.md)) |
 | `load` | — | `{"loaded": true, "elapsed_sec": float}` | Load the weights |
 | `unload` | — | `{"unloaded": bool, "vram_used_gb": float}` | **Give the VRAM back.** hearth calls it before switching models |
 | `image_to_mesh` | `image_path`, `out_dir`, plus §4 | §5 | **One image to a raw mesh.** Preprocessing is **the runner's job** |
@@ -56,7 +56,7 @@ One JSON object per line, UTF-8, over stdin and stdout.
 {
   "name": "hunyuan3d",
   "version": "2.1",
-  "contract": 2,
+  "contract": 3,
   "capabilities": {
     "image_to_mesh": true,
     "text_to_mesh": false,
@@ -69,6 +69,10 @@ One JSON object per line, UTF-8, over stdin and stdout.
     "octree_resolution": {"type": "int", "default": 384, "min": 64, "max": 768},
     "guidance_scale": {"type": "float", "default": 5.0, "min": 0.0, "max": 20.0},
     "seed": {"type": "int", "default": 0, "min": 0}
+  },
+  "method_params": {
+    "texture_mesh": {"rembg": {"type": "bool", "default": true},
+                     "save_glb": {"type": "bool", "default": false}}
   },
   "notes": "Free text. Anything a caller should know that the fields cannot say."
 }
@@ -84,10 +88,21 @@ One JSON object per line, UTF-8, over stdin and stdout.
   caller can say *why* something is unavailable rather than guessing.
 - **A capability that is absent is false.** Adding a name to this table never
   breaks an older runner.
-- `params` declares the model's own settings. hearth does not interpret them; it
-  passes them through, and a user interface can build a form from this table.
-- **hearth does not validate `params`.** Only the runner knows what its values
-  mean, so checking them is the runner's job.
+- `params` declares the model's own settings **for `image_to_mesh`**. hearth does
+  not interpret them; it passes them through, and a user interface can build a
+  form from this table.
+- **`method_params` declares the settings of every *other* method**, by name.
+  `texture_mesh` is not `image_to_mesh` with a flag: it takes a mesh from
+  anywhere, it may be asked of a different model, and its settings are its own.
+  Sending a mesh model's `steps` to it was accepted only because one runner
+  happened to ignore what it did not recognise, and that is the kind of coupling
+  a contract exists to prevent.
+- **A method with no entry in `method_params` takes no settings**, only the
+  arguments §4 names. At `contract` 1 or 2 there was no such table, so a caller
+  may fall back to `params` for those runners - **and hearth says on stderr that
+  it did**. The fallback is for old runners, not a default.
+- **hearth does not validate either table.** Only the runner knows what its
+  values mean, so checking them is the runner's job.
 
 ## 4. `image_to_mesh` arguments
 
@@ -108,11 +123,24 @@ quality loss rather than an error. **hearth does no preprocessing at all.**
   "mesh_path": "C:/.../out/raw.ply",
   "n_vertices": 637857,
   "n_faces": 1275718,
+  "up_axis": "z",
+  "forward_axis": "y",
   "params_used": {"steps": 30, "octree_resolution": 384, "guidance_scale": 5.0, "seed": 4711},
   "extra": {"foreground": "C:/.../out/foreground.png"},
   "metrics": {"load_sec": 40.2, "gen_sec": 87.9, "vram_peak_gb": 14.18}
 }
 ```
+
+**`up_axis` and `forward_axis` say which way the mesh is oriented**, as one of
+`x`, `y`, `z`, `-x`, `-y`, `-z`. They are required at `contract` 3.
+
+**Report `null` if it has not been measured.** That is not a formality: a mesh
+imported on the wrong axis renders perfectly correctly, so nobody finds the
+mistake by looking - a mirrored joint is the first sign, and by then it has been
+printed. `null` travels downstream and the caller says "assumed, unverified"
+where it would otherwise have said nothing at all. **hearth never fills these in**,
+and neither should anything else: a guess here is indistinguishable from a
+measurement, which is precisely what makes it expensive.
 
 **`params_used` is every declared parameter with the value that was actually
 used**, defaults filled in. It is what makes "run that again" and "same, but one
@@ -214,3 +242,28 @@ that reliably gives the VRAM back. The consequences are the caller's to accept:
 A runner does not need to do anything to support this, but it must not make it
 worse: **do not write a mesh file in place under its final name until it is
 complete**, or a cancelled run leaves a truncated file that looks finished.
+Write beside it and rename when it is whole - `os.replace` is atomic. A format
+that writes several files at once (`.obj` with its `.mtl` and its textures) is
+written into a directory of its own and **the directory** is renamed: renaming
+only the mesh leaves the references inside it pointing at nothing.
+
+## Future
+
+**Not implemented, and recorded so that it is not rediscovered.**
+
+`capabilities` says which methods a runner has, but not **what they take and
+give**. A caller that joins steps together therefore keeps its own table of
+"`image_to_mesh` turns an image into a mesh", and adding a GPU model that does
+something new - splitting a mesh into parts, say, or rigging one - means editing
+that table in the caller as well as writing the runner.
+
+The fix is to let the table say it:
+
+```json
+"kinds": {"image_to_mesh": {"takes": ["image"], "gives": "mesh"}}
+```
+
+**It is not worth doing yet.** Everything installed here is image-to-mesh, so the
+table has one shape in it and the caller's copy is not wrong. It becomes worth
+doing on the day a runner does something else - and on that day this note is what
+stops it being designed twice.
