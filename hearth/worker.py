@@ -26,21 +26,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import comfy, config, imagegen, manager
+from . import comfy, config, imagegen, manager, vram
 from .comfy import ComfyUIClient
-from .manager import CanceledError, GpuBusyError, Manager, assert_gpu_free
+from .comfy_process import ABSENT, COMFY, FAILED, READY
+from .manager import CanceledError, Manager
 from .rpc import Request, Responder
 
 MANAGER = Manager()
 
 
 def _gpu_busy() -> bool:
-    """Whether another process holds the GPU. **This one does not raise.**"""
-    try:
-        assert_gpu_free()
-    except GpuBusyError:
-        return True
-    return False
+    """Whether another process holds the GPU, as of the last look.
+
+    **Not asked here.** The probe costs a connect timeout (`GpuBusyWatch`), and
+    `status` is polled by an interface while a generation runs.
+    """
+    return manager.GPU_BUSY_WATCH.busy()
 
 
 def _run_dir(params: dict[str, Any]) -> Path:
@@ -71,25 +72,6 @@ def m_ping(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
     }
 
 
-# What `is_alive` last said, and when. **The control thread is the one reading
-# stdin** (`__main__.py`), so three seconds spent asking ComfyUI is three seconds
-# in which a `cancel` is not read. A caller polls `status` every few seconds
-# while a job runs, and the answer does not change that fast.
-_COMFY_CACHE: tuple[float, bool] = (0.0, False)
-_COMFY_CACHE_SEC = 10.0
-
-
-def _comfy_alive() -> bool:
-    """Whether ComfyUI is up, asked at most every ten seconds."""
-    global _COMFY_CACHE  # noqa: PLW0603 - one cache, and it belongs to this module
-    now = time.monotonic()
-    when, alive = _COMFY_CACHE
-    if now - when > _COMFY_CACHE_SEC:
-        alive = ComfyUIClient().is_alive()
-        _COMFY_CACHE = (now, alive)
-    return alive
-
-
 def m_status(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
     """Report what is installed and what state it is in. **This starts nothing.**
 
@@ -98,6 +80,7 @@ def m_status(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
     that does that while a window opens is felt by the person opening it. Ask for
     one with `capabilities` when a model is chosen (`docs/protocol.md` §4).
     """
+    comfy_state = COMFY.status()
     return {
         "loaded": MANAGER.loaded(),
         "busy": MANAGER.busy(),
@@ -105,7 +88,14 @@ def m_status(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
         "known": MANAGER.known_capabilities(),
         "image_models": imagegen.all_capabilities(),
         "default_image_model": config.DEFAULT_IMAGE_MODEL,
-        "comfy_alive": _comfy_alive(),
+        # **Kept, and still the answer to "can I ask for an image".** `comfy`
+        # below says more, but a caller written against the older shape is not
+        # broken by the new one.
+        "comfy_alive": comfy_state["state"] == READY,
+        "comfy": comfy_state,
+        # **The card as Windows sees it, not as a GPU library reports it**
+        # (`vram.py`). `null` where those counters do not exist.
+        "vram": vram.SAMPLER.status(),
         "gpu_busy": _gpu_busy(),
         "output_dir": str(config.OUTPUT_DIR),
         "protocol": config.PROTOCOL_VERSION,
@@ -123,6 +113,31 @@ def m_capabilities(params: dict[str, Any], responder: Responder) -> dict[str, An
     if model:
         return MANAGER.capabilities(model)
     return MANAGER.all_capabilities()
+
+
+def m_comfy_start(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
+    """Start ComfyUI, or adopt the one already listening. **Answers at once.**
+
+    Loading FLUX takes about a minute, so this returns `state: "starting"` and
+    the caller watches `status.comfy` - a control method that blocked for a
+    minute would stop `cancel` being read for that minute
+    (`docs/protocol.md` §2).
+
+    **This does not touch the GPU**, which is what keeps it a control method:
+    starting a child process is not loading weights, and the weights that follow
+    are loaded by ComfyUI in its own process.
+    """
+    return COMFY.start()
+
+
+def m_comfy_stop(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
+    """Stop ComfyUI, **but only the one hearth started**.
+
+    A ComfyUI somebody else launched is left running and `why` says so. It is
+    the same rule as `GpuBusyError`: hearth does not end other people's
+    processes on a user's behalf (`docs/protocol.md` §6).
+    """
+    return COMFY.stop()
 
 
 def m_cancel(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
@@ -297,7 +312,7 @@ def _image(method: str, params: dict[str, Any], responder: Responder) -> dict[st
 
     run_dir = _run_dir(params)
     client = ComfyUIClient()
-    imagegen.require_alive(client)
+    _await_comfy(responder)
     # **An image is busy too.** It is somebody else's process, so `cancel` takes
     # the prompt out of ComfyUI's queue rather than killing anything (§5); but a
     # person waiting eight minutes for an image has the same right to stop it as
@@ -344,6 +359,9 @@ def _image_now(  # noqa: PLR0913 - one call, and every argument is already compu
         # interrupted wait rather than a lie answered instantly.
         "on_queued": _queued(client),
         "should_stop": MANAGER.is_canceling,
+        # **A spill ends the wait.** Going over the card does not fail, it gets
+        # several times slower, so the wait is the only place it can be caught.
+        "spill_check": COMFY.spilled,
     }
     prompt = str(used["prompt"])
     responder.progress("image", f"generating with {model}")
@@ -486,16 +504,55 @@ def m_selftest_long_job(params: dict[str, Any], responder: Responder) -> dict[st
 # --- Sharing one card ---------------------------------------------------------
 
 
+def _await_comfy(responder: Responder) -> None:
+    """Block until ComfyUI is ready, or say why it never will be.
+
+    **Only a `starting` ComfyUI is waited for.** hearth may have been asked to
+    start it a second ago - by `HEARTH_COMFY_AUTOSTART`, or by a caller that
+    pressed Start and then Make image - and failing because the weights are
+    still loading would be a race a person cannot win. An `absent` one is not
+    waited for at all: nothing is coming.
+
+    Raises:
+        RuntimeError: If ComfyUI is not running and nothing is starting it.
+    """
+    state = COMFY.state()
+    if state == READY:
+        return
+    if state in (ABSENT, FAILED):
+        detail = COMFY.status().get("why") or "Start it first, or set HEARTH_COMFY_AUTOSTART=1."
+        raise RuntimeError(f"ComfyUI ({config.COMFY_BASE_URL}) is not running. {detail}")
+    started = time.monotonic()
+    deadline = started + config.COMFY_START_TIMEOUT_SEC
+    while time.monotonic() < deadline:
+        state = COMFY.state()
+        if state == READY:
+            return
+        if state in (ABSENT, FAILED):
+            break
+        responder.progress(
+            "comfy", f"waiting for ComfyUI to start ({int(time.monotonic() - started)}s)"
+        )
+        time.sleep(2.0)
+    why = COMFY.status().get("why") or "it never answered"
+    raise RuntimeError(f"ComfyUI ({config.COMFY_BASE_URL}) did not start: {why}")
+
+
 def _free_comfy(responder: Responder) -> None:
     """If ComfyUI is up, ask it to free its VRAM. Best effort.
 
     **Always call this before loading a 3D model.** They share one GPU, and an
     image model left resident does not leave room for a 3D one.
     """
-    client = ComfyUIClient()
-    if client.is_alive():
-        responder.progress("free_vram", "asking ComfyUI to release its models")
-        client.free_models()
+    # **Asked of the state, not of ComfyUI.** A watcher keeps that state true
+    # (`comfy_process.watch`), and probing here cost the whole connect timeout
+    # every time ComfyUI was not running - on the machine this was written for a
+    # closed port is dropped rather than refused, so that was seconds added to
+    # every mesh generation to learn something already known.
+    if COMFY.state() != READY:
+        return
+    responder.progress("free_vram", "asking ComfyUI to release its models")
+    ComfyUIClient().free_models()
 
 
 def _free_mesh(responder: Responder) -> None:
@@ -521,6 +578,10 @@ CONTROL_METHODS = {
     "status": m_status,
     "capabilities": m_capabilities,
     "cancel": m_cancel,
+    # **Starting a process is not using the GPU.** Both answer immediately and
+    # the loading happens in ComfyUI's own process, watched through `status`.
+    "comfy_start": m_comfy_start,
+    "comfy_stop": m_comfy_stop,
 }
 
 GPU_METHODS = {

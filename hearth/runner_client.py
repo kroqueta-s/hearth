@@ -72,6 +72,18 @@ class RunnerProcess:
         """Whether the process is alive."""
         return self._proc is not None and self._proc.poll() is None
 
+    def pid(self) -> int:
+        """The process hearth started, or 0.
+
+        **Not necessarily the process holding the VRAM**: a venv `python.exe`
+        re-executes the base interpreter, so what this returns is the launcher
+        and the weights are in a child of it (measured 2026-09-03; see
+        `_start`). Whoever measures the card has to look at the family, which is
+        what `vram.py` does.
+        """
+        proc = self._proc
+        return proc.pid if proc is not None and proc.poll() is None else 0
+
     def start(self) -> None:
         """Start the runner as a child process.
 

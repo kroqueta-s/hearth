@@ -24,9 +24,11 @@ import threading
 import time
 from typing import Any
 
-from . import config
+from . import config, vram
 from .comfy import ComfyUIClient
+from .comfy_process import COMFY
 from .runner_client import Relay, RunnerError, RunnerProcess
+from .vram import VramOverError
 
 # What `busy` is called while the work is in another application's process.
 EXTERNAL_PREFIX = "image:"
@@ -64,6 +66,60 @@ def assert_gpu_free() -> None:
             "says means the GPU is taken. Stop it first, or set the port to 0 "
             "in .env to disable this check."
         )
+
+
+class GpuBusyWatch:
+    """Whether another application holds the GPU, looked at on a timer.
+
+    **`assert_gpu_free` is not free.** It connects to `HEARTH_GPU_BUSY_PORT`,
+    and on the machine hearth was written for a closed port on 127.0.0.1 is
+    dropped rather than refused (measured 2026-09-06), so learning "nobody is
+    there" costs the whole connect timeout. `status` asks that question every
+    time it is called, and `status` is what an interface polls while a
+    generation runs - it was answering in **500 ms**, on the same thread that
+    reads `cancel`.
+
+    So the probe happens here, on a timer, and `status` reports the last look.
+    **`load` still asks for itself**: it is about to spend a minute, so half a
+    second buys a fresh answer, and a stale "free" would put two models on one
+    card.
+    """
+
+    def __init__(self) -> None:
+        self._busy = False
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        if self._thread is not None or config.GPU_BUSY_PORT <= 0:
+            return
+        self._thread = threading.Thread(target=self._run, name="hearth-gpu-busy", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                assert_gpu_free()
+            except GpuBusyError:
+                self._busy = True
+            else:
+                self._busy = False
+            self._stop.wait(GPU_BUSY_POLL_SEC)
+
+    def busy(self) -> bool:
+        """The last look. **False when the check is disabled**, as it always was."""
+        return self._busy
+
+
+# How often the "somebody else has the GPU" port is looked at. **Not measured**:
+# another application taking the card is not something that happens between two
+# frames of an interface, and each look costs a connect timeout.
+GPU_BUSY_POLL_SEC = 5.0
+
+GPU_BUSY_WATCH = GpuBusyWatch()
 
 
 def _contract_shape(name: str, result: dict[str, Any]) -> dict[str, Any]:
@@ -104,6 +160,61 @@ def _contract_shape(name: str, result: dict[str, Any]) -> dict[str, Any]:
 # has just pressed cancel usually presses stop next. The default of thirty
 # seconds turned that into a minute of silence when ComfyUI was wedged.
 CANCEL_TIMEOUT_SEC = 5.0
+
+
+class _SpillWatch:
+    """Ends a generation that has spilled out of the card into system memory.
+
+    **Nothing raises when a GPU runs out on this machine.** The driver falls back
+    to shared memory and the work carries on several times slower, which is the
+    kind of failure nobody attributes to its cause. This is the outside view of
+    it: the runner's process family is measured against
+    `HEARTH_VRAM_SHARED_ABORT_GB`, and going over ends the process - the only
+    thing that stops a torch loop (`docs/runner_contract.md` §9).
+
+    The kill surfaces as `RunnerError` in `generate`, exactly as a cancel does,
+    and `spilled` is what tells the two apart.
+    """
+
+    def __init__(self, runner: RunnerProcess, name: str) -> None:
+        self._runner = runner
+        self._name = name
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.spilled: VramOverError | None = None
+
+    def start(self) -> None:
+        pid = self._runner.pid()
+        if pid <= 0 or config.VRAM_SHARED_ABORT_GB <= 0:
+            return
+        vram.SAMPLER.watch(pid, self._name)
+        self._pid = pid
+        self._thread = threading.Thread(target=self._run, name="hearth-spill", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.wait(config.VRAM_SAMPLE_SEC):
+            over = vram.SAMPLER.spilled(self._pid)
+            if over is None:
+                continue
+            shared_gb, dedicated_gb = over
+            self.spilled = VramOverError(
+                f"{self._name} (pid {self._pid}) has spilled {shared_gb:.1f} GB into shared "
+                f"system memory on top of {dedicated_gb:.1f} GB of dedicated VRAM. It would "
+                "finish, several times slower. Ask for less, or free the card first.",
+                shared_gb=shared_gb,
+                dedicated_gb=dedicated_gb,
+                pid=self._pid,
+            )
+            print(f"[hearth] {self.spilled}", file=sys.stderr)
+            self._runner.kill()
+            return
+
+    def stop(self) -> None:
+        self._stop.set()
+        pid = getattr(self, "_pid", 0)
+        if pid:
+            vram.SAMPLER.forget(pid)
 
 
 class Manager:
@@ -327,14 +438,25 @@ class Manager:
         if needs_load:
             self.load(name, relay=relay)
         self._begin(name)
+        runner = self._runners[name]
+        # **The same ruler as ComfyUI's.** A runner that holds torch watches its
+        # own VRAM (`apply_vram_limit`), but not every runner holds torch -
+        # partfield does not - and a spill there was invisible. Watching from
+        # outside covers both, and covers a runner whose own limit is wrong.
+        watch = _SpillWatch(runner, name)
+        watch.start()
         try:
-            result = self._runners[name].call(method, params, relay=relay)
+            result = runner.call(method, params, relay=relay)
         except RunnerError:
+            over = watch.spilled
+            if over is not None:
+                raise over from None
             canceled = self._canceled_instead(f"{method} on {name}")
             if canceled is not None:
                 raise canceled from None
             raise
         finally:
+            watch.stop()
             self._end()
         return {"model": name, **_contract_shape(name, result)}
 
@@ -599,3 +721,9 @@ class Manager:
         for runner in list(self._runners.values()):
             runner.stop()
         self._release_gpu()
+        GPU_BUSY_WATCH.stop()
+        # **Last, and only if hearth started it.** An adopted ComfyUI belongs to
+        # whoever launched it and holding a loaded FLUX across Blender sessions
+        # is the point of adopting one at all.
+        COMFY.shutdown()
+        vram.SAMPLER.stop()

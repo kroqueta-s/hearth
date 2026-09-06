@@ -71,6 +71,8 @@ So a `ping` sent during an eight-minute generation is answered in milliseconds,
 
 **Control methods never touch the GPU.** That is what makes answering them next
 to a generation safe, and it is why nothing that loads weights is one of them.
+`comfy_start` is not an exception: it starts a process and returns, and the
+weights are loaded by ComfyUI in its own process, watched through `status`.
 
 ## 3. Methods
 
@@ -82,6 +84,8 @@ to a generation safe, and it is why nothing that loads weights is one of them.
 | `status` | — | §4. **Starts no runner**: inventory and state only |
 | `capabilities` | `model` (optional) | One runner's capability table ([contract §3](runner_contract.md#3-what-capabilities-looks-like)), or every runner's when `model` is omitted. **Starting a runner to ask is cheap, but it is not free** — see §4 |
 | `cancel` | — | `{"canceled": bool, "was": name}`, or `why` when there was nothing to cancel. §5 |
+| `comfy_start` | — | `{"state": "starting"|"ready", "owned": bool, "pid": int|null}`. **Returns at once**: watch `status.comfy` for the rest. §4a |
+| `comfy_stop` | — | `{"stopped": bool, "why": str|null}`. **Only the ComfyUI hearth started.** §4a |
 | `shutdown` | — | `{"bye": true}`, then hearth exits |
 
 ### GPU
@@ -114,7 +118,9 @@ never declared is rejected by the runner, with a reason**
 `prompt`, `negative`, `image_seed`, `image_steps`, `image_model`, and per route
 `denoise` (`image_to_image`) or `strength` (`sketch_to_image`). `image_model` is
 one of the names in `status.image_models`; omitting it uses the default from
-`.env`. **The image routes need ComfyUI running**; the mesh routes do not.
+`.env`. **The image routes need ComfyUI running**; the mesh routes do not. A
+route asked for while ComfyUI is `starting` waits for it (§4a) rather than
+failing a race a person cannot win.
 
 #### 3.2 There is no "do the whole flow" method
 
@@ -135,6 +141,11 @@ back, send the next**; the client library has a helper for exactly this.
   "image_models": {"sdxl": {"capabilities": {}, "params": {}}},
   "default_image_model": "sdxl",
   "comfy_alive": true,
+  "comfy": {"state": "ready", "owned": true, "pid": 27652, "url": "http://127.0.0.1:8200"},
+  "vram": {"dedicated_used_gb": 29.1, "dedicated_total_gb": 32.0, "shared_used_gb": 0.1,
+           "shared_abort_gb": 1.0,
+           "by_pid": {"27652": {"dedicated_gb": 28.4, "shared_gb": 0.1, "what": "comfyui"}},
+           "sampled_at": 1757170000.0},
   "gpu_busy": false,
   "output_dir": "C:/.../output",
   "protocol": 1
@@ -152,6 +163,43 @@ doing three of those while a window is opening is felt.
 **`image_models` describes the image side in the same shape as the mesh side**,
 so one piece of code can build a form for both. A route the model does not have
 is `false` in its capability table (FLUX has no ControlNet here, for instance).
+
+### 4a. ComfyUI, and how full the card is
+
+**hearth starts ComfyUI and stops the one it started.** ComfyUI is still a
+separate application - nothing is installed into its virtual environment and its
+code is never touched - but the launch arguments decide how much of the card it
+takes, and sharing one GPU is already hearth's job. `comfy.state` is one of:
+
+| `state` | Means |
+|---|---|
+| `absent` | Nothing is listening. The image routes fail with a reason |
+| `starting` | hearth launched it and it has not answered yet. **An image route waits**, reporting `comfy` progress |
+| `ready` | `/system_stats` answers |
+| `failed` | It exited, or never answered within `HEARTH_COMFY_START_TIMEOUT_SEC`. `why` says which |
+
+**`owned` is the difference between "hearth started it" and "hearth found it".**
+There is one port, so a ComfyUI already running is adopted rather than
+duplicated: `owned: false`, and `comfy_stop` leaves it alone and says so in
+`why`. Show that in an interface — a Stop button that silently does nothing is
+worse than one that explains itself. `pid` is the process actually listening,
+which on Windows is a child of the one hearth launched.
+
+**`vram` is read from Windows' own performance counters, not from a GPU
+library.** This matters more than it sounds: on the machine hearth was written
+for, `torch.cuda.mem_get_info` reports 43.87 GB of VRAM for a 32 GB card,
+because it counts the shared pool — system RAM the driver spills into. An
+application that believes it keeps loading, the driver pages, and **nothing
+fails**: it just becomes several times slower. `dedicated_total_gb` comes from
+`HEARTH_VRAM_DEDICATED_GB`, which is a measurement of the machine.
+
+`shared_used_gb` rising **is** the spill. `by_pid` gives the same two numbers per
+process for the ones hearth is watching — ComfyUI and any runner that is
+generating — so the one that is paging is named rather than guessed at.
+`sampled_at` is a unix time: the numbers come from a background sample, so
+`status` stays instant however often it is asked. **`vram` is `null` where those
+counters do not exist** (anywhere but Windows), and a caller must show that as
+unknown rather than as zero.
 
 ## 5. Long jobs: cancelling, and telling work from a hang
 
@@ -229,7 +277,18 @@ is worth branching on; the message is for a person.
 | `RunnerError` | A runner would not start, died, or refused | Show the message: it carries the tail of that runner's stderr |
 | `FileNotFoundError` | An input, a weight, or a repository is missing | Show the path |
 | `ValueError` | An unknown argument or a value out of range | Show it verbatim; it names the argument |
+| `VramOverError` | The work spilled out of the card into system memory | Say what to change. It carries `shared_gb`, `dedicated_gb` and `pid` |
 | `RuntimeError` | Generation failed, or ComfyUI is not running | Show the message |
+
+**`VramOverError` is a failure that would otherwise not have been one.** Going
+over the card does not raise anywhere: the driver falls back to shared memory -
+system RAM - and the work carries on. Measured on 2026-09-06, FLUX at 2048x2048
+put ComfyUI at 29.0 GB of dedicated VRAM and 1.1 GB of shared on a 32 GB card.
+So hearth watches the shared usage of ComfyUI and of the running runner, and past
+`HEARTH_VRAM_SHARED_ABORT_GB` it ends the work rather than letting it crawl —
+taking the prompt out of ComfyUI's queue, or ending the runner's process. **The
+numbers on the error are the argument for the advice**: a smaller image, fewer
+steps, or a model that fits.
 
 **One hearth at a time, and it says so rather than fighting.** hearth holds a
 local port while it owns the card - `HEARTH_LOCK_PORT`, **8011 by default** - and

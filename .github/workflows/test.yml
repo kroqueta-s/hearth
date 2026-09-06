@@ -29,3 +29,10 @@ jobs:
       - run: python tests/test_comfy_wait.py
       # hearth answers as docs/protocol.md says, using `selftest_long_job`.
       - run: python tests/test_protocol.py
+      # **Starting and adopting ComfyUI**, with a stand-in HTTP server and a
+      # python that sleeps standing in for the real thing.
+      - run: python tests/test_comfy_process.py
+      # The VRAM counters are Windows' own, so most of this skips itself here.
+      # What does run is the part that must hold everywhere: an unknown reading
+      # is never reported as a spill.
+      - run: python tests/test_vram.py

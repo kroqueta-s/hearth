@@ -56,6 +56,11 @@ def _env() -> dict[str, str]:
         "HEARTH_RUNNER_SLEEPY_CWD": str(FAKE),
         "HEARTH_LOCK_PORT": "0",
         "HEARTH_GPU_BUSY_PORT": "0",
+        # **A test may not start ComfyUI.** With autostart on in the operator's
+        # `.env`, every test that spawns a hearth was loading 17 GB of weights
+        # onto the card - and one that kills hearth to prove a point left it
+        # running afterwards. Seen on 2026-09-06.
+        "HEARTH_COMFY_AUTOSTART": "0",
         "SLEEPY_LOAD_SEC": "0.1",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUNBUFFERED": "1",
@@ -155,8 +160,12 @@ def _generating(session: Session, out_dir: Path, seconds: float = 30.0) -> int:
     )
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
-        if marker.is_file():
-            return int(marker.read_text(encoding="ascii"))
+        # **Existing is not the same as written.** The file appears the moment
+        # it is created and is read a moment later; seen empty on 2026-09-06,
+        # which failed the test with a ValueError rather than a diagnosis.
+        written = marker.read_text(encoding="ascii").strip() if marker.is_file() else ""
+        if written:
+            return int(written)
         time.sleep(0.05)
     raise AssertionError("the runner never started generating")
 

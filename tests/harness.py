@@ -129,6 +129,8 @@ class HearthSession:
             **os.environ,
             "HEARTH_LOCK_PORT": "0",
             "HEARTH_GPU_BUSY_PORT": "0",
+            # **A test may not start ComfyUI**: see `tests/test_shutdown.py`.
+            "HEARTH_COMFY_AUTOSTART": "0",
             "PYTHONIOENCODING": "utf-8",
             "PYTHONUNBUFFERED": "1",
         }

@@ -29,6 +29,8 @@ import queue
 import sys
 import threading
 
+from . import config, manager, vram
+from .comfy_process import COMFY
 from .rpc import Channel, Request, install_stdout_guard, read_requests
 from .worker import CONTROL_METHODS, MANAGER, handle
 
@@ -68,6 +70,23 @@ def main() -> int:
 
     gpu_thread = threading.Thread(target=_serve_gpu, name="hearth-gpu", daemon=True)
     gpu_thread.start()
+
+    # **The card is watched from the start**, not from the first generation: a
+    # caller opening a window wants to be told what is already on the GPU, and
+    # `status` can only report the last sample somebody took (`vram.py`).
+    vram.SAMPLER.start()
+    # Same reason: the "somebody else has the card" probe costs a connect
+    # timeout, and `status` may not pay it (`manager.GpuBusyWatch`).
+    manager.GPU_BUSY_WATCH.start()
+    # Notices a ComfyUI started or stopped outside hearth, off the control thread.
+    COMFY.watch()
+    if config.COMFY_AUTOSTART:
+        # **Started, not waited for.** Loading FLUX takes about a minute and
+        # nothing here needs it yet; `status.comfy` says how far along it is.
+        try:
+            COMFY.start()
+        except (OSError, RuntimeError) as exc:
+            print(f"[hearth] could not start ComfyUI: {exc}", file=sys.stderr)
 
     try:
         for request in read_requests(sys.stdin):

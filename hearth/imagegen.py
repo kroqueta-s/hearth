@@ -197,28 +197,13 @@ def snap_to_sdxl(width: int, height: int, *, target: int = 1024) -> tuple[int, i
     return (out[0], out[1])
 
 
-def require_alive(client: ComfyUIClient) -> None:
-    """Check that ComfyUI answers.
-
-    Args:
-        client: The ComfyUI client.
-
-    Raises:
-        RuntimeError: If it does not. **Starting it is not hearth's business**,
-            so this only says so.
-    """
-    if not client.is_alive():
-        raise RuntimeError(
-            f"ComfyUI ({config.COMFY_BASE_URL}) does not answer. Start it first."
-        )
-
-
 def _run(
     client: ComfyUIClient,
     prompt_id: str,
     out_dir: Path,
     relay: Any | None = None,
     should_stop: Any | None = None,
+    spill_check: Any | None = None,
 ) -> list[Path]:
     """Wait for a submitted workflow and save the images it produced into out_dir.
 
@@ -231,6 +216,8 @@ def _run(
             cancellable at all**: without it the wait blocks for up to
             `COMFY_TIMEOUT_SEC`, and a caller that asked to stop is told
             nothing is running.
+        spill_check: Asked on each heartbeat; ends the wait when ComfyUI has
+            spilled into system memory (`comfy.wait_for`).
 
     Returns:
         The saved paths, in the order they were produced.
@@ -238,12 +225,14 @@ def _run(
     Raises:
         RuntimeError: If no image came out at all.
         comfy.Interrupted: If `should_stop` said so.
+        vram.VramOverError: If `spill_check` said ComfyUI is paging.
     """
     entry = client.wait_for(
         prompt_id,
         timeout_sec=float(config.COMFY_TIMEOUT_SEC),
         relay=relay,
         should_stop=should_stop,
+        spill_check=spill_check,
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     saved: list[Path] = []
@@ -304,6 +293,7 @@ def text_to_image(
     relay: Any | None = None,
     on_queued: Any | None = None,
     should_stop: Any | None = None,
+    spill_check: Any | None = None,
 ) -> Path:
     """Generate one image from a text prompt, save it, and return its path."""
     spec, workflow = _spec(image_model, "txt2img")
@@ -325,7 +315,7 @@ def text_to_image(
     prompt_id = client.queue_prompt(wf)
     if on_queued is not None:
         on_queued(prompt_id)
-    return _run(client, prompt_id, out_dir, relay, should_stop)[0]
+    return _run(client, prompt_id, out_dir, relay, should_stop, spill_check)[0]
 
 
 def sketch_to_image(
@@ -343,6 +333,7 @@ def sketch_to_image(
     relay: Any | None = None,
     on_queued: Any | None = None,
     should_stop: Any | None = None,
+    spill_check: Any | None = None,
 ) -> Path:
     """Generate one image from a sketch plus a prompt, save it, and return its path."""
     spec, workflow = _spec(image_model, "controlnet")
@@ -369,7 +360,7 @@ def sketch_to_image(
     prompt_id = client.queue_prompt(wf)
     if on_queued is not None:
         on_queued(prompt_id)
-    return _run(client, prompt_id, out_dir, relay, should_stop)[0]
+    return _run(client, prompt_id, out_dir, relay, should_stop, spill_check)[0]
 
 
 def image_to_image(
@@ -387,6 +378,7 @@ def image_to_image(
     relay: Any | None = None,
     on_queued: Any | None = None,
     should_stop: Any | None = None,
+    spill_check: Any | None = None,
 ) -> Path:
     """Generate one image from an input image plus a prompt, save it, and return its path."""
     spec, workflow = _spec(image_model, "img2img")
@@ -410,7 +402,7 @@ def image_to_image(
     prompt_id = client.queue_prompt(wf)
     if on_queued is not None:
         on_queued(prompt_id)
-    return _run(client, prompt_id, out_dir, relay, should_stop)[0]
+    return _run(client, prompt_id, out_dir, relay, should_stop, spill_check)[0]
 
 
 def _stage_input(src: Path, out_dir: Path, name: str, max_dim: int) -> tuple[int, int, Path]:

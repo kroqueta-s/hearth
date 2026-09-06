@@ -152,8 +152,19 @@ class Responder:
         self._closed = True
 
     def error(self, exc: BaseException) -> None:
-        """Finish with a failure. The responder cannot be used again."""
-        self._emit({"event": "error", "error": {"type": type(exc).__name__, "message": str(exc)}})
+        """Finish with a failure. The responder cannot be used again.
+
+        **An exception may carry numbers as well as a sentence.** A `details`
+        dict on the exception is merged into the error, which is how
+        `VramOverError` reports how far over the card it went
+        (`docs/protocol.md` §6) without the caller parsing a message written for
+        a person.
+        """
+        error: dict[str, Any] = {"type": type(exc).__name__, "message": str(exc)}
+        details = getattr(exc, "details", None)
+        if isinstance(details, dict):
+            error.update(details)
+        self._emit({"event": "error", "error": error})
         self._closed = True
 
 

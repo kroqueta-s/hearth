@@ -1,11 +1,17 @@
 # SPDX-License-Identifier: MIT
 """A blocking HTTP client for ComfyUI, built on httpx.
 
-**ComfyUI is a separate application and hearth never starts or stops it.**
-Workflows are submitted to whatever is already listening at
-`HEARTH_COMFY_BASE_URL` and the results are fetched back.
-**Nothing is ever installed into ComfyUI's virtual environment**: the only
-contact is over HTTP.
+**ComfyUI is a separate application, and this module only ever talks to it over
+HTTP.** Workflows are submitted to whatever is listening at
+`HEARTH_COMFY_BASE_URL` and the results are fetched back. **Nothing is ever
+installed into ComfyUI's virtual environment and its code is never touched**:
+the only contact is this conversation.
+
+Starting and stopping the process is hearth's, and lives next door in
+`comfy_process.py` - the launch arguments decide how much of the card ComfyUI
+takes, which made them part of sharing one GPU rather than part of somebody
+else's setup. **That changes nothing here**: an adopted ComfyUI and one hearth
+started are the same application to this file.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from typing import Any
 import httpx
 
 from . import config
+from .vram import VramOverError
 
 
 class ComfyUINotReadyError(RuntimeError):
@@ -170,6 +177,7 @@ class ComfyUIClient:
         relay: Any | None = None,
         heartbeat_sec: float = 5.0,
         should_stop: Any | None = None,
+        spill_check: Any | None = None,
     ) -> dict[str, Any]:
         """Poll until the prompt_id appears in the history, and return that entry.
 
@@ -191,9 +199,16 @@ class ComfyUIClient:
                 cancellable**: the prompt has already been taken out of
                 ComfyUI's queue, so continuing to wait for it would be waiting
                 for something that will never arrive.
+            spill_check: Asked at each heartbeat. Returns
+                `(shared_gb, dedicated_gb, pid)` when ComfyUI has spilled out of
+                the card and into system memory, otherwise None. The prompt is
+                then taken out of ComfyUI's queue and the caller is told what to
+                change, rather than left to finish against a driver that is
+                paging (`vram.VramOverError`).
 
         Raises:
             Interrupted: If `should_stop` says so.
+            VramOverError: If `spill_check` says ComfyUI is paging.
             ComfyUIExecutionError: If the workflow failed.
             TimeoutError: If it never finished.
         """
@@ -203,9 +218,27 @@ class ComfyUIClient:
         while time.monotonic() < deadline:
             if should_stop is not None and should_stop():
                 raise Interrupted(f"prompt {prompt_id} was cancelled")
-            if relay is not None and time.monotonic() - last_beat >= heartbeat_sec:
+            if time.monotonic() - last_beat >= heartbeat_sec:
                 last_beat = time.monotonic()
-                relay("image", f"ComfyUI is working ({int(last_beat - started)}s elapsed)")
+                if relay is not None:
+                    relay("image", f"ComfyUI is working ({int(last_beat - started)}s elapsed)")
+                # **Checked on the heartbeat, not every poll.** The reading is
+                # taken by a background thread anyway (`vram.py`), and the
+                # threshold is about gigabytes of spill, not about a moment.
+                if spill_check is not None:
+                    spilled = spill_check()
+                    if spilled is not None:
+                        shared_gb, dedicated_gb, pid = spilled
+                        self.cancel_prompt(prompt_id)
+                        raise VramOverError(
+                            f"ComfyUI (pid {pid}) has spilled {shared_gb:.1f} GB into shared "
+                            f"system memory on top of {dedicated_gb:.1f} GB of dedicated VRAM. "
+                            "It would finish, several times slower. Ask for a smaller image, "
+                            "fewer steps, or a smaller model.",
+                            shared_gb=shared_gb,
+                            dedicated_gb=dedicated_gb,
+                            pid=pid,
+                        )
             r = httpx.get(self._url(f"history/{prompt_id}"), timeout=self.timeout_sec)
             r.raise_for_status()
             entry = r.json().get(prompt_id)
