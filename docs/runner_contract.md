@@ -44,7 +44,12 @@ One JSON object per line, UTF-8, over stdin and stdout.
 | `shutdown` | — | `{"bye": true}` | Exit |
 
 **Optional methods**, implemented only if `capabilities` declares them:
-`text_to_mesh`, `multi_image_to_mesh`, `texture_mesh`.
+`text_to_mesh`, `multi_image_to_mesh`, `texture_mesh`, `segment_mesh` (§5a).
+
+**`image_to_mesh` is required of a runner that generates meshes**, which is not
+every runner. One that only answers questions about a mesh it is given declares
+`image_to_mesh: false` and implements the optional method it does have; hearth
+never calls a method a capability table did not claim, so nothing else changes.
 
 **A runner is never asked to cancel anything** (§9).
 
@@ -62,7 +67,8 @@ One JSON object per line, UTF-8, over stdin and stdout.
     "text_to_mesh": false,
     "multi_image_to_mesh": false,
     "texture": true,
-    "texture_mesh": true
+    "texture_mesh": true,
+    "segment_mesh": false
   },
   "params": {
     "steps": {"type": "int", "default": 30, "min": 1, "max": 200},
@@ -157,6 +163,56 @@ was clamped, the clamped one is the true answer.
   of magnitude slower while kernels are tuned.
 - `extra` holds whatever intermediate files the model produced. hearth passes it
   through untouched.
+
+## 5a. `segment_mesh`: a mesh in, a label per face out
+
+**Not every runner generates.** A runner may instead answer a question about a
+mesh it is handed, and the first of those is: *where do the parts of this thing
+meet?* A runner that can answer it declares `segment_mesh: true` and takes:
+
+| Argument | Required | Meaning |
+|---|:--:|---|
+| `mesh_path` | yes | **Absolute path** to a PLY. Not glTF and not `.obj` |
+| `out_dir` | yes | **Absolute path** to write into. hearth makes one per run |
+| anything in `method_params.segment_mesh` | no | The runner's own settings for this method |
+
+and answers:
+
+```json
+{
+  "segments_path": "C:/.../out/segments.npz",
+  "faces": 395712,
+  "k_values": [2, 3, 4, "...", 20],
+  "faces_sha256": "1f0c…",
+  "elapsed_sec": 301.5,
+  "peak_rss_mb": 6685.0,
+  "params_used": {"n_point_per_face": 100}
+}
+```
+
+- **`segments_path` is an `.npz` holding `k_values` `(K,)` and `labels_by_k`
+  `(K, F)`, both `int16`.** Every number of segments comes back at once, because
+  the expensive part is the field the labels are cut out of and not the cutting:
+  a caller's slider over K is then an array lookup rather than another run.
+  Row *i* is the labelling for `k_values[i]`, and its labels are `0..k-1`.
+- **`faces_sha256` is the hash of the input's face array**, and it is what makes
+  the answer usable at all. A label array means nothing unless face *i* on the
+  way out is face *i* on the way in, and **nothing about a mislabelled mesh
+  looks wrong**: it renders perfectly and prints as the wrong part. So the
+  runner hashes the faces it read and the caller compares that against its own
+  copy before believing a single label. The canonical form is fixed so that two
+  libraries reading one file agree: **little-endian `int32`, C order, `(F, 3)`,
+  SHA-256 of those bytes.**
+- **There is no `mesh_path`, and no `up_axis`.** Nothing was generated and
+  nothing was moved, so there is nothing to orient - and hearth does not ask for
+  one here (§5's axes are about a mesh result).
+- `peak_rss_mb` is worth reporting when the method is expensive in memory rather
+  than in VRAM, which is the case for anything running on the CPU.
+
+**The face order is the runner's to preserve, and its to check.** Reading a mesh
+with a library that merges duplicate vertices by default, or writing it out
+through a format that splits them, renumbers every face after the first change.
+A runner that cannot preserve the order must fail rather than answer.
 
 ## 6. Failure
 
@@ -293,7 +349,15 @@ The fix is to let the table say it:
 "kinds": {"image_to_mesh": {"takes": ["image"], "gives": "mesh"}}
 ```
 
-**It is not worth doing yet.** Everything installed here is image-to-mesh, so the
-table has one shape in it and the caller's copy is not wrong. It becomes worth
-doing on the day a runner does something else - and on that day this note is what
-stops it being designed twice.
+**That day has arrived, and it was cheaper than expected.** `segment_mesh` (§5a)
+is a runner that does something else: a mesh in, labels out. Adding it cost the
+caller one line in its own table and cost this document a section - **and no
+caller branched on a name**, because the capability table already said which
+runners could be asked. So the shape of the answer stayed a document rather than
+becoming data.
+
+**Still not worth doing, for a different reason than before.** The argument for
+`kinds` was that a caller would otherwise edit a table per new method; the
+measured cost of doing exactly that, once, was one line. It becomes worth doing
+when a caller has to join steps it was not written for - a saved flow naming a
+method that did not exist when the flow was written - and not before.

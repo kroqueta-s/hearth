@@ -60,11 +60,23 @@ def m_capabilities(params: dict[str, Any], progress: Any) -> dict[str, Any]:
             "multi_image_to_mesh": False,
             "texture": False,
             "texture_mesh": False,
+            # **An optional method, declared as data** (contract §2 and §3).
+            # hearth offers `segment_mesh` because this table says so and for no
+            # other reason; a runner that leaves it out is simply not asked.
+            # `SLEEPY_NO_SEGMENT` withdraws the declaration, which is how a
+            # caller's refusal can be tested **without naming a model anywhere**.
+            "segment_mesh": os.environ.get("SLEEPY_NO_SEGMENT", "0") != "1",
         },
         "params": {
             "seconds": {"type": "float", "default": 1.0, "min": 0.0, "max": 600.0},
             "steps": {"type": "int", "default": 10, "min": 1, "max": 200},
             "seed": {"type": "int", "default": 0, "min": 0},
+        },
+        # **Another method's settings are its own** (contract §3), not a subset
+        # of `params`.
+        "method_params": {
+            "segment_mesh": {"n_point_per_face": {"type": "int", "default": 100,
+                                                  "min": 20, "max": 1000}},
         },
         # The runner's own process id, so a test can check it is gone.
         "pid": os.getpid(),
@@ -95,11 +107,24 @@ def m_image_to_mesh(params: dict[str, Any], progress: Any) -> dict[str, Any]:
     return pipeline.image_to_mesh(params, progress)
 
 
+def m_segment_mesh(params: dict[str, Any], progress: Any) -> dict[str, Any]:
+    """One mesh to a per-face part label for every K. **An optional method.**
+
+    It produces no mesh at all, which is the case worth having here: everything
+    else in this family answers with one, and a result shape that carries no
+    `mesh_path` and no axes has to travel through hearth untouched.
+    """
+    from . import pipeline
+
+    return pipeline.segment_mesh(params, progress)
+
+
 METHODS = {
     "capabilities": m_capabilities,
     "load": m_load,
     "unload": m_unload,
     "image_to_mesh": m_image_to_mesh,
+    "segment_mesh": m_segment_mesh,
 }
 
 

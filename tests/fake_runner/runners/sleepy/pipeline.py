@@ -128,3 +128,40 @@ def image_to_mesh(params: dict[str, Any], progress: Progress) -> dict[str, Any]:
         result["up_axis"] = "z"
         result["forward_axis"] = "y"
     return result
+
+
+def segment_mesh(params: dict[str, Any], progress: Progress) -> dict[str, Any]:
+    """Answer with a label per face for every K, without segmenting anything.
+
+    **The shape is the point.** This result carries no mesh and no axes, which is
+    what a method that is not a generator looks like, and hearth has to pass it
+    through unchanged rather than repairing it into a mesh result.
+    """
+    mesh_path = Path(str(params["mesh_path"]))
+    out_dir = Path(str(params["out_dir"]))
+    if not mesh_path.is_file():
+        raise FileNotFoundError(f"mesh not found: {mesh_path}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    allowed = {"n_point_per_face"}
+    unknown = set(params) - allowed - {"mesh_path", "out_dir"}
+    if unknown:
+        raise ValueError(f"unknown parameters: {sorted(unknown)} (accepted: {sorted(allowed)})")
+
+    load(progress)
+    faces = 12
+    k_values = list(range(2, 6))
+    progress("segment", "clustering", step=len(k_values), total=len(k_values))
+    # Not an npz here: writing one would need numpy, and hearth has none. The
+    # file exists because a caller told a path is real will open it.
+    segments_path = out_dir / "segments.npz"
+    segments_path.write_bytes(b"not really an npz")
+    return {
+        "segments_path": str(segments_path),
+        "faces": faces,
+        "k_values": k_values,
+        "faces_sha256": "0" * 64,
+        "elapsed_sec": 0.0,
+        "peak_rss_mb": 0.0,
+        "params_used": {"n_point_per_face": int(params.get("n_point_per_face", 100))},
+    }

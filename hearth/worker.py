@@ -234,6 +234,31 @@ def m_texture_mesh(params: dict[str, Any], responder: Responder) -> dict[str, An
     return {"run_dir": str(run_dir), **result}
 
 
+def m_segment_mesh(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
+    """An existing mesh to a part label for every face. **It makes no mesh.**
+
+    **Only runners that say so support this** (`capabilities.segment_mesh`), and
+    that is the whole of how it is offered: nothing here knows which runner can
+    segment, or that segmenting is different from generating.
+
+    It is the first method in this file that answers with something other than a
+    mesh or an image, and hearth's part in it is exactly the same as in the
+    others - name the runner, pass the rest through, relay the progress. **The
+    labels are not interpreted here**: what a label means, and which face is
+    which, is between the runner and the caller.
+    """
+    model, passthrough = _split_params(params, "mesh_path")
+    run_dir = _run_dir(params)
+    _free_comfy(responder)
+    result = MANAGER.generate(
+        model,
+        "segment_mesh",
+        {"mesh_path": str(params["mesh_path"]), "out_dir": str(run_dir), **passthrough},
+        relay=responder.progress,
+    )
+    return {"run_dir": str(run_dir), "source_mesh": str(params["mesh_path"]), **result}
+
+
 # --- Making an image ----------------------------------------------------------
 #
 # **The image is worth working on, not something to throw away.** Spending a
@@ -510,6 +535,8 @@ GPU_METHODS = {
     "multi_image_to_mesh": m_multi_image_to_mesh,
     # An existing mesh to a textured one
     "texture_mesh": m_texture_mesh,
+    # An existing mesh to a part label per face. **Not every runner generates**
+    "segment_mesh": m_segment_mesh,
     # Proving a long job does not freeze anything
     "selftest_long_job": m_selftest_long_job,
 }

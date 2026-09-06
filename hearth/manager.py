@@ -86,7 +86,11 @@ def _contract_shape(name: str, result: dict[str, Any]) -> dict[str, Any]:
             file=sys.stderr,
         )
         result = {**result, "params_used": result["params"]}
-    if "up_axis" not in result:
+    # **Only a result that carries a mesh owes an axis.** §5 is about the shape
+    # of a mesh result, and a method that produces none - `segment_mesh` answers
+    # with labels - has nothing to be oriented. Saying so anyway made a correct
+    # runner look defective once per call.
+    if "mesh_path" in result and "up_axis" not in result:
         print(
             f"[hearth] {name}: reports no `up_axis` (runner_contract.md §5). "
             "Passing it on as unknown rather than guessing",
