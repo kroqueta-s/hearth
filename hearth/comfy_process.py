@@ -32,7 +32,10 @@ who started it by hand across several Blender sessions should not lose it to a
 
 from __future__ import annotations
 
+import contextlib
+import os
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -96,31 +99,37 @@ def listening_pid(port: int) -> int:
     return 0
 
 
-def _kill_tree(pid: int) -> None:
-    """End a process **and its children**.
+def _kill_tree(pid: int, proc: subprocess.Popen[bytes] | None = None) -> None:
+    """End a process **and its children**, then collect it.
 
-    A venv's `python.exe` re-executes the base interpreter, so the process
-    holding the weights is a child of the one that was started (measured
-    2026-09-03; `runner_client` relies on the same fact). Killing only the
-    launcher would leave ComfyUI running with the whole card and nothing would
-    report it.
+    **The children matter on Windows.** A venv's `python.exe` re-executes the
+    base interpreter, so the process holding the weights is a child of the one
+    that was started (measured 2026-09-03; `runner_client` relies on the same
+    fact). Killing only the launcher would leave ComfyUI running with the whole
+    card and nothing would report it.
+
+    **Collecting it matters everywhere else.** A killed child that is never
+    waited for stays in the process table as a zombie, and every way of asking
+    "is it still running" says yes - `os.kill(pid, 0)` included. That is not an
+    academic point: it failed this repository's own test on Linux, where the
+    process had in fact been killed.
     """
     if sys.platform == "win32":
-        with_children = ["taskkill", "/T", "/F", "/PID", str(pid)]
         try:
             subprocess.run(
-                with_children,
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
                 capture_output=True,
                 timeout=20,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
-            return
         except (OSError, subprocess.SubprocessError):
-            pass  # Fall through: a plain kill is better than nothing.
-    try:
-        subprocess.run(["kill", "-9", str(pid)], capture_output=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        pass
+            pass  # Fall through to the plain kill below.
+    else:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+    if proc is not None:
+        with contextlib.suppress(subprocess.SubprocessError, OSError):
+            proc.wait(timeout=10)
 
 
 # How long to wait for `/system_stats` before calling ComfyUI absent.
@@ -367,7 +376,7 @@ class ComfyProcess:
         # A ComfyUI that half-started still holds the card, so it does not get
         # to stay just because it never answered.
         if pid:
-            _kill_tree(pid)
+            _kill_tree(pid, proc)
             vram.SAMPLER.forget(pid)
         self._close_logs()
 
@@ -392,7 +401,7 @@ class ComfyProcess:
                 ),
             }
         # The spawned process is the launcher; `/T` takes the interpreter with it.
-        _kill_tree(proc.pid if proc is not None else pid)
+        _kill_tree(proc.pid if proc is not None else pid, proc)
         if pid:
             vram.SAMPLER.forget(pid)
         with self._lock:
