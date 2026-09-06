@@ -281,10 +281,10 @@ is worth branching on; the message is for a person.
 | `RuntimeError` | Generation failed, or ComfyUI is not running | Show the message |
 
 **`VramOverError` is a failure that would otherwise not have been one.** Going
-over the card does not raise anywhere: the driver falls back to shared memory and
-the work finishes, several times slower. Measured on 2026-09-06, a FLUX step went
-from 0.40 s to 3.8 s at the moment of the spill. So hearth watches the shared
-usage of ComfyUI and of the running runner, and past
+over the card does not raise anywhere: the driver falls back to shared memory -
+system RAM - and the work carries on. Measured on 2026-09-06, FLUX at 2048x2048
+put ComfyUI at 29.0 GB of dedicated VRAM and 1.1 GB of shared on a 32 GB card.
+So hearth watches the shared usage of ComfyUI and of the running runner, and past
 `HEARTH_VRAM_SHARED_ABORT_GB` it ends the work rather than letting it crawl —
 taking the prompt out of ComfyUI's queue, or ending the runner's process. **The
 numbers on the error are the argument for the advice**: a smaller image, fewer

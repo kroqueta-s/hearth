@@ -29,7 +29,7 @@ import queue
 import sys
 import threading
 
-from . import config, vram
+from . import config, manager, vram
 from .comfy_process import COMFY
 from .rpc import Channel, Request, install_stdout_guard, read_requests
 from .worker import CONTROL_METHODS, MANAGER, handle
@@ -75,6 +75,9 @@ def main() -> int:
     # caller opening a window wants to be told what is already on the GPU, and
     # `status` can only report the last sample somebody took (`vram.py`).
     vram.SAMPLER.start()
+    # Same reason: the "somebody else has the card" probe costs a connect
+    # timeout, and `status` may not pay it (`manager.GpuBusyWatch`).
+    manager.GPU_BUSY_WATCH.start()
     # Notices a ComfyUI started or stopped outside hearth, off the control thread.
     COMFY.watch()
     if config.COMFY_AUTOSTART:

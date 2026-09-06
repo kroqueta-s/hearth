@@ -68,6 +68,60 @@ def assert_gpu_free() -> None:
         )
 
 
+class GpuBusyWatch:
+    """Whether another application holds the GPU, looked at on a timer.
+
+    **`assert_gpu_free` is not free.** It connects to `HEARTH_GPU_BUSY_PORT`,
+    and on the machine hearth was written for a closed port on 127.0.0.1 is
+    dropped rather than refused (measured 2026-09-06), so learning "nobody is
+    there" costs the whole connect timeout. `status` asks that question every
+    time it is called, and `status` is what an interface polls while a
+    generation runs - it was answering in **500 ms**, on the same thread that
+    reads `cancel`.
+
+    So the probe happens here, on a timer, and `status` reports the last look.
+    **`load` still asks for itself**: it is about to spend a minute, so half a
+    second buys a fresh answer, and a stale "free" would put two models on one
+    card.
+    """
+
+    def __init__(self) -> None:
+        self._busy = False
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        if self._thread is not None or config.GPU_BUSY_PORT <= 0:
+            return
+        self._thread = threading.Thread(target=self._run, name="hearth-gpu-busy", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                assert_gpu_free()
+            except GpuBusyError:
+                self._busy = True
+            else:
+                self._busy = False
+            self._stop.wait(GPU_BUSY_POLL_SEC)
+
+    def busy(self) -> bool:
+        """The last look. **False when the check is disabled**, as it always was."""
+        return self._busy
+
+
+# How often the "somebody else has the GPU" port is looked at. **Not measured**:
+# another application taking the card is not something that happens between two
+# frames of an interface, and each look costs a connect timeout.
+GPU_BUSY_POLL_SEC = 5.0
+
+GPU_BUSY_WATCH = GpuBusyWatch()
+
+
 def _contract_shape(name: str, result: dict[str, Any]) -> dict[str, Any]:
     """Bring an older runner's result up to contract §5, and no further.
 
@@ -667,6 +721,7 @@ class Manager:
         for runner in list(self._runners.values()):
             runner.stop()
         self._release_gpu()
+        GPU_BUSY_WATCH.stop()
         # **Last, and only if hearth started it.** An adopted ComfyUI belongs to
         # whoever launched it and holding a loaded FLUX across Blender sessions
         # is the point of adopting one at all.

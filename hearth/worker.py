@@ -29,19 +29,19 @@ from typing import Any
 from . import comfy, config, imagegen, manager, vram
 from .comfy import ComfyUIClient
 from .comfy_process import ABSENT, COMFY, FAILED, READY
-from .manager import CanceledError, GpuBusyError, Manager, assert_gpu_free
+from .manager import CanceledError, Manager
 from .rpc import Request, Responder
 
 MANAGER = Manager()
 
 
 def _gpu_busy() -> bool:
-    """Whether another process holds the GPU. **This one does not raise.**"""
-    try:
-        assert_gpu_free()
-    except GpuBusyError:
-        return True
-    return False
+    """Whether another process holds the GPU, as of the last look.
+
+    **Not asked here.** The probe costs a connect timeout (`GpuBusyWatch`), and
+    `status` is polled by an interface while a generation runs.
+    """
+    return manager.GPU_BUSY_WATCH.busy()
 
 
 def _run_dir(params: dict[str, Any]) -> Path:

@@ -60,11 +60,20 @@ _GB = 1024.0**3
 class VramOverError(RuntimeError):
     """A process spilled out of dedicated VRAM into shared (system) memory.
 
-    **Raised rather than waited through.** Once the driver is paging, the work
-    does not fail, it becomes several times slower - measured on this machine on
-    2026-09-06, a FLUX step went from 0.40 s to 3.8 s the moment it spilled, and
-    the run was abandoned by hand after 86 seconds. Waiting for that to finish
-    costs more than starting again with a smaller request.
+    **Raised rather than waited through.** When the dedicated pool is full the
+    driver does not fail: it pages into system memory and the work carries on.
+    Measured on this machine on 2026-09-06, FLUX at 2048x2048 put ComfyUI at
+    29.0 GB of dedicated VRAM and **1.1 GB of shared** on a 32 GB card.
+
+    **How much slower a spill makes it was not measured here** - the run was
+    ended by this check at 34 seconds - and it is worth being careful about that
+    number, because the obvious evidence for it turned out to be something else.
+    A step time of 3.8 s was read as the moment of a spill on this machine, and
+    it is not: FLUX at 1024x1024 runs at 3.79-3.94 s/step **whether it spills or
+    not** (measured 2026-09-06, both ways). What is true without measuring a
+    slowdown is that the memory a spill lands in is the same RAM every other
+    process wants - and this machine has 31.6 GB of it, because the other 32 went
+    to the card.
     """
 
     def __init__(self, message: str, *, shared_gb: float, dedicated_gb: float, pid: int) -> None:

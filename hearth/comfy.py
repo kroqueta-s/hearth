@@ -201,12 +201,10 @@ class ComfyUIClient:
                 for something that will never arrive.
             spill_check: Asked at each heartbeat. Returns
                 `(shared_gb, dedicated_gb, pid)` when ComfyUI has spilled out of
-                the card and into system memory, otherwise None. **A spill is
-                not something to wait out**: measured on this machine on
-                2026-09-06, the step time went from 0.40 s to 3.8 s the moment
-                it happened, and the operator gave up after 86 seconds. So the
-                prompt is taken out of ComfyUI's queue and the caller is told
-                what to change.
+                the card and into system memory, otherwise None. The prompt is
+                then taken out of ComfyUI's queue and the caller is told what to
+                change, rather than left to finish against a driver that is
+                paging (`vram.VramOverError`).
 
         Raises:
             Interrupted: If `should_stop` says so.

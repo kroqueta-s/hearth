@@ -80,10 +80,11 @@ COMFY_START_TIMEOUT_SEC: int = _int("HEARTH_COMFY_START_TIMEOUT_SEC", 300)
 VRAM_DEDICATED_GB: float = _float("HEARTH_VRAM_DEDICATED_GB", 0.0)
 
 # How much shared (system) memory one process may use before its work is
-# abandoned. **A spill does not fail, it gets slower** - measured 2026-09-06, a
-# FLUX step went from 0.40 s to 3.8 s - so waiting for it costs more than
-# starting again. **The default is not measured**: it is a small number chosen
-# to be above the incidental hundred megabytes a desktop uses. 0 disables it.
+# abandoned. **A spill does not fail, it pages** into the system RAM every other
+# process wants. **The default is not measured as a threshold**, but the number
+# it has to separate is: measured 2026-09-06 on this machine, ComfyUI sat at
+# 0.01-0.11 GB of shared while it fitted, and reached 1.14 GB when it did not.
+# 0 disables it.
 VRAM_SHARED_ABORT_GB: float = _float("HEARTH_VRAM_SHARED_ABORT_GB", 1.0)
 
 # How often the counters are read. **Not measured**: two seconds is short
