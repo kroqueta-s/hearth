@@ -28,6 +28,11 @@ def _int(key: str, default: int) -> int:
     return int(raw) if raw is not None and raw.strip() != "" else default
 
 
+def _float(key: str, default: float) -> float:
+    raw = os.getenv(key)
+    return float(raw) if raw is not None and raw.strip() != "" else default
+
+
 def _bool(key: str, default: bool) -> bool:
     raw = os.getenv(key)
     if raw is None or raw.strip() == "":
@@ -45,6 +50,46 @@ OUTPUT_DIR: Path = _path("HEARTH_OUTPUT_DIR")
 # --- Image generation (ComfyUI: an external app, reached over HTTP only) ------
 COMFY_BASE_URL: str = _str("HEARTH_COMFY_BASE_URL", "http://127.0.0.1:8200").rstrip("/")
 COMFY_TIMEOUT_SEC: int = _int("HEARTH_COMFY_TIMEOUT_SEC", 1800)
+
+# --- Starting ComfyUI (`hearth/comfy_process.py`) ----------------------------
+# **hearth starts it as a child process**, the way `forge` starts `mincut`, and
+# stops only the one it started. Nothing is installed into its virtual
+# environment and its code is never touched: the only lever is the command line.
+# Leave these empty and hearth will only ever adopt one somebody else started.
+COMFY_PYTHON: str = _str("HEARTH_COMFY_PYTHON")
+COMFY_ROOT: str = _str("HEARTH_COMFY_ROOT")
+
+# **The arguments are how a spill is prevented**, so they are configuration and
+# not code: which of them a card needs depends on the card. See `.env.example`.
+COMFY_ARGS: str = _str("HEARTH_COMFY_ARGS")
+
+# Start it when hearth starts. Off by default: a caller that only makes meshes
+# should not pay a minute of weights loading it will never use.
+COMFY_AUTOSTART: bool = _bool("HEARTH_COMFY_AUTOSTART", False)
+
+# How long to wait for `/system_stats` to answer. 300 s is what
+# `start-comfyui.ps1` waits; the first run after a custom node changes is slow.
+COMFY_START_TIMEOUT_SEC: int = _int("HEARTH_COMFY_START_TIMEOUT_SEC", 300)
+
+# --- Watching the card (`hearth/vram.py`) ------------------------------------
+# **What the card really has**, in GB. Every number a GPU library reports here
+# includes the shared pool - system RAM the driver spills into - and is
+# therefore larger than the card: measured 2026-09-06 on this machine, 43.87 GB
+# reported against 32 GB of dedicated VRAM. 0 means "report what is in use and
+# claim no total".
+VRAM_DEDICATED_GB: float = _float("HEARTH_VRAM_DEDICATED_GB", 0.0)
+
+# How much shared (system) memory one process may use before its work is
+# abandoned. **A spill does not fail, it gets slower** - measured 2026-09-06, a
+# FLUX step went from 0.40 s to 3.8 s - so waiting for it costs more than
+# starting again. **The default is not measured**: it is a small number chosen
+# to be above the incidental hundred megabytes a desktop uses. 0 disables it.
+VRAM_SHARED_ABORT_GB: float = _float("HEARTH_VRAM_SHARED_ABORT_GB", 1.0)
+
+# How often the counters are read. **Not measured**: two seconds is short
+# against the ten a spill takes to matter and long against the 0.2 ms a sample
+# costs (measured 2026-09-06).
+VRAM_SAMPLE_SEC: float = _float("HEARTH_VRAM_SAMPLE_SEC", 2.0)
 
 # The image model used when a request does not name one.
 DEFAULT_IMAGE_MODEL: str = _str("HEARTH_IMAGE_MODEL", "sdxl")

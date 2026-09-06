@@ -155,8 +155,12 @@ def _generating(session: Session, out_dir: Path, seconds: float = 30.0) -> int:
     )
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
-        if marker.is_file():
-            return int(marker.read_text(encoding="ascii"))
+        # **Existing is not the same as written.** The file appears the moment
+        # it is created and is read a moment later; seen empty on 2026-09-06,
+        # which failed the test with a ValueError rather than a diagnosis.
+        written = marker.read_text(encoding="ascii").strip() if marker.is_file() else ""
+        if written:
+            return int(written)
         time.sleep(0.05)
     raise AssertionError("the runner never started generating")
 
