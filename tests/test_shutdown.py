@@ -56,6 +56,11 @@ def _env() -> dict[str, str]:
         "HEARTH_RUNNER_SLEEPY_CWD": str(FAKE),
         "HEARTH_LOCK_PORT": "0",
         "HEARTH_GPU_BUSY_PORT": "0",
+        # **A test may not start ComfyUI.** With autostart on in the operator's
+        # `.env`, every test that spawns a hearth was loading 17 GB of weights
+        # onto the card - and one that kills hearth to prove a point left it
+        # running afterwards. Seen on 2026-09-06.
+        "HEARTH_COMFY_AUTOSTART": "0",
         "SLEEPY_LOAD_SEC": "0.1",
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUNBUFFERED": "1",

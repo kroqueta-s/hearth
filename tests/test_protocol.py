@@ -22,6 +22,7 @@ Run it with hearth's own virtual environment::
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from collections.abc import Callable
@@ -37,7 +38,14 @@ from hearth import config  # noqa: E402
 
 
 def _hearth() -> Hearth:
-    """Start hearth on the python running these tests."""
+    """Start hearth on the python running these tests.
+
+    **A test may not start ComfyUI.** `Hearth.start` passes the environment
+    through, so with autostart on in the operator's `.env` every one of these
+    would put 17 GB of weights on the card to check a `ping`. Seen on
+    2026-09-06.
+    """
+    os.environ["HEARTH_COMFY_AUTOSTART"] = "0"
     return Hearth.start(sys.executable, REPO_ROOT)
 
 
