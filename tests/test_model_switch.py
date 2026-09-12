@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: MIT
 """Check that switching between models actually works, on real hardware.
 
-**This uses the GPU.** Every runner in `HEARTH_RUNNERS` is run in turn and then
-the first one is run again, because the interesting failure is not "model A
-works" but **"model A still works after model B has held the GPU"**.
+**This uses the GPU.** Every runner in `HEARTH_RUNNERS` that generates is run
+in turn and then the first one is run again, because the interesting failure is
+not "model A works" but **"model A still works after model B has held the
+GPU"**.
+
+**Which ones generate is asked, not assumed** (contract §3). A runner may
+answer a question about a mesh instead of making one - `segment_mesh` - and
+demanding `image_to_mesh` of it is a `RunnerError` rather than a discovery.
 
 Three things are verified for each switch:
 
@@ -40,12 +45,30 @@ from harness import BUDGET_SEC, IMAGE, HearthSession, WatchdogAbort, print_diagn
 from hearth import config  # noqa: E402
 
 
-def _sequence() -> list[str]:
+def _sequence(names: list[str]) -> list[str]:
     """The order to switch through. **It ends where it started** (A to B to A)."""
-    names = config.runner_names()
     if len(names) < 2:
         raise RuntimeError(f"switching needs at least two runners (there are {names})")
     return [*names, names[0]]
+
+
+def _generators(hearth: HearthSession) -> list[str]:
+    """The runners that generate. **Asked, not assumed** (contract §3).
+
+    Not every runner makes a mesh from an image: `partfield` answers a question
+    about one instead (`segment_mesh`), and asking it to generate is a
+    `RunnerError` rather than a discovery. What is being tested here is
+    switching, so the sequence is whatever can be switched between.
+    """
+    able: list[str] = []
+    for name in config.runner_names():
+        caps, _ = hearth.call("capabilities", {"model": name}, budget_sec=180.0, trace=False)
+        if caps.get("capabilities", {}).get("image_to_mesh"):
+            able.append(name)
+        else:
+            offers = sorted(k for k, v in caps.get("capabilities", {}).items() if v)
+            print(f"  skipping {name}: it does not generate (it offers {offers})")
+    return able
 
 
 def main() -> int:
@@ -61,10 +84,6 @@ def main() -> int:
         print(f"HEARTH_TEST_IMAGE names nothing: {IMAGE}")
         return 1
 
-    order = _sequence()
-    print(f"switching: {' -> '.join(order)}")
-    print("budgets: " + " / ".join(f"{n}={BUDGET_SEC.get(n)}s" for n in dict.fromkeys(order)))
-
     failures = 0
     results: list[tuple[str, dict[str, Any]]] = []
     with HearthSession() as hearth:
@@ -72,6 +91,10 @@ def main() -> int:
         if status.get("gpu_busy"):
             print("  SKIP another process holds the GPU. **Refusing is correct**, so stop here.")
             return 0
+
+        order = _sequence(_generators(hearth))
+        print(f"switching: {' -> '.join(order)}")
+        print("budgets: " + " / ".join(f"{n}={BUDGET_SEC.get(n)}s" for n in dict.fromkeys(order)))
 
         for step, name in enumerate(order, start=1):
             print(f"\n--- {step}/{len(order)}: {name} ---", flush=True)
