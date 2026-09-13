@@ -109,6 +109,22 @@ WORKFLOW_DIR: Path = Path(_wf_raw) if Path(_wf_raw).is_absolute() else REPO_ROOT
 # number you can measure; the cost of it being off is a silent one.
 FREE_MESH_BEFORE_IMAGE: bool = _bool("HEARTH_FREE_MESH_BEFORE_IMAGE", True)
 
+# --- When a runner dies on its own -------------------------------------------
+# How many times a generating call is tried again after its runner died without
+# answering. **The driver aborts the process from under us**: on gfx1151 a large
+# decode hits `PAL failed to submit CMD! result:-5`, the errors are sticky, and
+# torch's abort handler ends the process (measured 2026-09-13: the reference
+# robot at 1024 died on two consecutive attempts and finished on the third).
+# There is nothing to catch inside the runner, because the runner is gone.
+#
+# A retry is safe here and only here: a generating call produces a file and
+# changes nothing else, so running it twice costs time and nothing more. It is
+# **not** applied to a cancel - which ends the process on purpose - nor to a
+# runner that answered with an error, which is a real answer and will be the
+# same the second time. Each retry pays a full load of the weights, so the
+# ceiling is low on purpose. 0 turns it off.
+GENERATE_RETRIES: int = _int("HEARTH_GENERATE_RETRIES", 1)
+
 # --- Keeping the GPU to ourselves --------------------------------------------
 # A port that, when something is listening on it, means **another application**
 # already holds the GPU. **Only one thing can have the VRAM**, so hearth refuses

@@ -227,6 +227,18 @@ A runner that cannot preserve the order must fail rather than answer.
 When hearth notices a runner has died, it fails the outstanding request and
 attaches the tail of that runner's stderr.
 
+**A death is not always the runner's fault, so a generating call is tried once
+more** (`HEARTH_GENERATE_RETRIES`, default 1). A driver can take the process
+away mid-decode - on gfx1151 a large one hits `PAL failed to submit CMD!` and
+torch's abort handler ends the process - and there is nothing for a runner to
+catch, because the runner is gone. The retry costs a full load of the weights,
+so the result carries `attempts` when it took more than one, and `progress`
+reports a `retry` stage while it happens.
+
+**Only a generating call, and only a death.** A cancel ends the process on
+purpose (§9) and is never retried; neither is an error a runner *answered*
+with, because the runner is still running and will say the same thing again.
+
 ## 7. Registering a runner
 
 hearth learns about runners from `.env`. **No model is ever named in code.**

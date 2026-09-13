@@ -89,6 +89,20 @@ def image_to_mesh(params: dict[str, Any], progress: Progress) -> dict[str, Any]:
     # holding the GPU is this one.
     (out_dir / "runner.pid").write_text(str(os.getpid()), encoding="ascii")
 
+    # **`SLEEPY_DIE_TIMES` is the driver taking the process away.** On gfx1151 a
+    # large decode is aborted from under the runner - the errors are sticky and
+    # torch's handler ends the process - and there is nothing for a runner to
+    # catch, because the runner is gone. `os._exit` is the only faithful stand-in:
+    # no traceback, no `error` event, no flush. The count is kept in a file next
+    # to the output, because each death is a fresh process with fresh globals.
+    deaths = int(os.environ.get("SLEEPY_DIE_TIMES", "0"))
+    if deaths:
+        tally = out_dir / "deaths.txt"
+        so_far = int(tally.read_text(encoding="ascii")) if tally.exists() else 0
+        if so_far < deaths:
+            tally.write_text(str(so_far + 1), encoding="ascii")
+            os._exit(3)
+
     load(progress)
     seconds = float(params.get("seconds", 1.0))
     steps = max(1, int(params.get("steps", 10)))

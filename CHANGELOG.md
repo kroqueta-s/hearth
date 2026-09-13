@@ -34,6 +34,23 @@ should track.
 - **A runner ends itself when the process that started it is gone** (§10). See
   below; this is the one that had no symptom at all.
 
+### A death that was not the runner's fault
+
+- **A generating call whose runner died without answering is tried once more**
+  (`HEARTH_GENERATE_RETRIES`, default 1). The driver takes the process away
+  mid-decode on gfx1151 - `PAL failed to submit CMD! result:-5`, sticky errors,
+  torch's abort handler - and there is nothing for a runner to catch, because
+  the runner is gone. Measured 2026-09-13: the reference robot at 1024 died on
+  two consecutive attempts and finished on the third, so an unattended run
+  stopped for a reason nobody could act on.
+- The retry pays a full load of the weights, so **the result carries `attempts`
+  when it took more than one** and `progress` reports a `retry` stage while it
+  happens. Without that, a caller timing a generation against the measurements
+  sees a load it cannot explain.
+- **Only a generating call, and only a death.** A cancel ends the process on
+  purpose and is never retried; nor is an error a runner *answered* with, since
+  it is still running and will answer the same way again.
+
 ### Nothing is left holding the card
 
 - **`shutdown` during a generation kills the runner first**, rather than asking

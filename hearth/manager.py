@@ -432,6 +432,31 @@ class Manager:
         caps = self.capabilities(name).get("capabilities", {})
         if not caps.get(method, False):
             raise RunnerError(f"{name} does not support {method} (check its capabilities)")
+        attempts = 0
+        while True:
+            try:
+                return self._generate_once(name, method, params, relay, attempts)
+            except RunnerError:
+                attempts += 1
+                if attempts > max(config.GENERATE_RETRIES, 0) or not self._died_unasked(name):
+                    raise
+                if relay is not None:
+                    relay(
+                        "retry",
+                        f"{name} died without answering; loading it again and asking once more "
+                        f"(attempt {attempts + 1})",
+                    )
+
+    def _generate_once(
+        self,
+        name: str,
+        method: str,
+        params: dict[str, Any],
+        relay: Relay | None,
+        attempt: int,
+    ) -> dict[str, Any]:
+        """One attempt at a generating call, loading the runner if it is not up."""
+        self._refuse_if_shutting_down()
         with self._lock:
             self._forget_dead()
             needs_load = self._loaded != name
@@ -458,7 +483,27 @@ class Manager:
         finally:
             watch.stop()
             self._end()
-        return {"model": name, **_contract_shape(name, result)}
+        shaped = {"model": name, **_contract_shape(name, result)}
+        if attempt:
+            # **Say that it took more than one go.** A caller comparing times
+            # against the table would otherwise see a load it cannot explain.
+            shaped["attempts"] = attempt + 1
+        return shaped
+
+    def _died_unasked(self, name: str) -> bool:
+        """Did the runner's process go away on its own, rather than being ended?
+
+        **A cancel and a shutdown both end the process** (contract §9), and
+        neither is something to try again. Nor is an error the runner answered
+        with: it is still running, and the answer will be the same. What is left
+        is the driver taking the process out from under us, which the next
+        attempt may well survive.
+        """
+        with self._lock:
+            if self._shutting_down or self._canceling:
+                return False
+        runner = self._runners.get(name)
+        return runner is not None and not runner.is_running()
 
     def cancel(self) -> dict[str, Any]:
         """End whatever is generating right now, by ending its process.

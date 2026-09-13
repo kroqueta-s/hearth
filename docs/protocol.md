@@ -50,6 +50,15 @@ Its replies. **Zero or more `progress`, then exactly one `result` or `error`**:
 **A request that cannot be parsed is answered with nothing at all**, because
 there is no `id` to answer to. It is written to stderr instead. Send valid JSON.
 
+A generating request whose runner died without answering is tried once more
+(`HEARTH_GENERATE_RETRIES`). It looks like this, and the `attempts` in the
+result is there so that a caller timing the call can explain the extra load:
+
+```json
+{"id": 1, "event": "progress", "stage": "retry", "message": "trellis2 died without answering; ..."}
+{"id": 1, "event": "result", "result": {"mesh_path": "C:/out/raw.ply", "attempts": 2}}
+```
+
 ## 2. Two classes of method
 
 **This is the part that surprises people.** hearth does not answer strictly in
