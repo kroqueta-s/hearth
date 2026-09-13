@@ -20,6 +20,9 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Protocol
 
+from . import config
+
+
 # Where progress goes: `(stage, message)`, plus **counted** steps (`step`, and
 # `total` only when the length is known).
 # **Nothing estimated arrives here** - no ETA, no overall percentage (contract §8).
@@ -118,6 +121,16 @@ class RunnerProcess:
         # whole card, and **nothing anywhere errors** - everything afterwards is
         # simply several times slower.
         env["HEARTH_PARENT_PID"] = str(os.getpid())
+        # **So that a death has a name.** A HIP kernel fault is asynchronous and
+        # lands at the next synchronising call; the context is sticky after it,
+        # and the second throw during unwinding ends the process - leaving
+        # `PAL failed to submit CMD!` and nothing about the original fault. With
+        # the runtime's own logging on, the failing API and its error are on
+        # stderr, which is drained here and attached to the failure. Setting it
+        # only when it is not already set leaves an operator chasing one bug by
+        # hand in control of it.
+        if config.RUNNER_HIP_LOG_LEVEL > 0:
+            env.setdefault("AMD_LOG_LEVEL", str(config.RUNNER_HIP_LOG_LEVEL))
         self._proc = subprocess.Popen(
             [str(python), "-m", module],
             cwd=cwd or None,

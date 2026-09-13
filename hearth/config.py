@@ -125,6 +125,20 @@ FREE_MESH_BEFORE_IMAGE: bool = _bool("HEARTH_FREE_MESH_BEFORE_IMAGE", True)
 # ceiling is low on purpose. 0 turns it off.
 GENERATE_RETRIES: int = _int("HEARTH_GENERATE_RETRIES", 1)
 
+# What the HIP runtime writes to stderr, for the runner that died without
+# saying why. **The first error is hidden behind the abort**: a HIP kernel
+# fault is asynchronous and surfaces at the next synchronising call, the
+# context is sticky from then on, and the throw during unwinding reaches
+# `std::terminate` - so what a runner leaves behind is `PAL failed to submit
+# CMD!` and no name for what actually went wrong. At 2 the runtime names the
+# failing API and the error itself, on stderr, which hearth already drains and
+# attaches to the failure. 0 leaves the runtime quiet.
+#
+# **It is not free-form**: AMD's levels are 0 none, 1 errors, 2 warnings and
+# errors, 3 and up per-API tracing that would bury the progress lines. Anything
+# above 2 is for a person chasing one bug by hand.
+RUNNER_HIP_LOG_LEVEL: int = _int("HEARTH_RUNNER_HIP_LOG_LEVEL", 2)
+
 # --- Keeping the GPU to ourselves --------------------------------------------
 # A port that, when something is listening on it, means **another application**
 # already holds the GPU. **Only one thing can have the VRAM**, so hearth refuses

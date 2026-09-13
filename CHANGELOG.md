@@ -50,6 +50,15 @@ should track.
 - **Only a generating call, and only a death.** A cancel ends the process on
   purpose and is never retried; nor is an error a runner *answered* with, since
   it is still running and will answer the same way again.
+- **A runner is started with the HIP runtime's logging on**
+  (`HEARTH_RUNNER_HIP_LOG_LEVEL`, default 2). The first error of a fault like
+  that is hidden: it is asynchronous, it surfaces at the next synchronising
+  call, the context is sticky from then on, and the throw during unwinding ends
+  the process - so all a runner leaves behind is `PAL failed to submit CMD!`
+  and no name for what actually went wrong. At level 2 the runtime names the
+  failing API and the error, on stderr, which hearth already drains and
+  attaches to the failure. An `AMD_LOG_LEVEL` already in the environment is
+  left alone.
 
 ### Nothing is left holding the card
 
