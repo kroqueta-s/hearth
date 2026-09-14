@@ -161,8 +161,13 @@ was clamped, the clamped one is the true answer.
 - **Never use `metrics.gen_sec` as a pass/fail signal.** It varies by several
   times for identical settings, and the first run on a machine can be an order
   of magnitude slower while kernels are tuned.
-- `extra` holds whatever intermediate files the model produced. hearth passes it
-  through untouched.
+- `extra` holds whatever else the run produced, by name. hearth passes it
+  through untouched. **It is not only for intermediates**: a runner that makes
+  two representations of one generation - a printable mesh and a textured copy
+  of it, say - puts the second here rather than inventing a method for it. How a
+  caller is meant to read that is in
+  [`docs/protocol.md` §3.1a](protocol.md), and the short of it is that a key is
+  used when it is there and never expected because of which model answered.
 
 ## 5a. `segment_mesh`: a mesh in, a label per face out
 
@@ -226,6 +231,18 @@ A runner that cannot preserve the order must fail rather than answer.
 **A runner never lets an exception escape.** One that dies leaves hearth waiting.
 When hearth notices a runner has died, it fails the outstanding request and
 attaches the tail of that runner's stderr.
+
+**A death is not always the runner's fault, so a generating call is tried once
+more** (`HEARTH_GENERATE_RETRIES`, default 1). A driver can take the process
+away mid-decode - on gfx1151 a large one hits `PAL failed to submit CMD!` and
+torch's abort handler ends the process - and there is nothing for a runner to
+catch, because the runner is gone. The retry costs a full load of the weights,
+so the result carries `attempts` when it took more than one, and `progress`
+reports a `retry` stage while it happens.
+
+**Only a generating call, and only a death.** A cancel ends the process on
+purpose (§9) and is never retried; neither is an error a runner *answered*
+with, because the runner is still running and will say the same thing again.
 
 ## 7. Registering a runner
 

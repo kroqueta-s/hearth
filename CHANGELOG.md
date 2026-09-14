@@ -34,6 +34,32 @@ should track.
 - **A runner ends itself when the process that started it is gone** (§10). See
   below; this is the one that had no symptom at all.
 
+### A death that was not the runner's fault
+
+- **A generating call whose runner died without answering is tried once more**
+  (`HEARTH_GENERATE_RETRIES`, default 1). The driver takes the process away
+  mid-decode on gfx1151 - `PAL failed to submit CMD! result:-5`, sticky errors,
+  torch's abort handler - and there is nothing for a runner to catch, because
+  the runner is gone. Measured 2026-09-13: the reference robot at 1024 died on
+  two consecutive attempts and finished on the third, so an unattended run
+  stopped for a reason nobody could act on.
+- The retry pays a full load of the weights, so **the result carries `attempts`
+  when it took more than one** and `progress` reports a `retry` stage while it
+  happens. Without that, a caller timing a generation against the measurements
+  sees a load it cannot explain.
+- **Only a generating call, and only a death.** A cancel ends the process on
+  purpose and is never retried; nor is an error a runner *answered* with, since
+  it is still running and will answer the same way again.
+- **A runner is started with the HIP runtime's logging on**
+  (`HEARTH_RUNNER_HIP_LOG_LEVEL`, default 2). The first error of a fault like
+  that is hidden: it is asynchronous, it surfaces at the next synchronising
+  call, the context is sticky from then on, and the throw during unwinding ends
+  the process - so all a runner leaves behind is `PAL failed to submit CMD!`
+  and no name for what actually went wrong. At level 2 the runtime names the
+  failing API and the error, on stderr, which hearth already drains and
+  attaches to the failure. An `AMD_LOG_LEVEL` already in the environment is
+  left alone.
+
 ### Nothing is left holding the card
 
 - **`shutdown` during a generation kills the runner first**, rather than asking
