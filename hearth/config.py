@@ -92,6 +92,22 @@ VRAM_SHARED_ABORT_GB: float = _float("HEARTH_VRAM_SHARED_ABORT_GB", 1.0)
 # costs (measured 2026-09-06).
 VRAM_SAMPLE_SEC: float = _float("HEARTH_VRAM_SAMPLE_SEC", 2.0)
 
+# **How much of the card every process together can hold**, in GB, before the
+# driver has to choose between spilling into shared memory and failing a command
+# submit - and it does both. Measured 2026-09-14 on this machine: with another
+# process holding 16 GB, adapter dedicated usage stopped at 29.93-29.96 GB of 32
+# twice; once the runner's submit failed with PAL `ErrorOutOfGpuMemory` and the
+# process aborted, once 7 GB spilled into shared memory and it finished.
+# A generation whose runner declares `vram_peak_gb` (runner contract §3) is not
+# started while the other processes and that figure together exceed this.
+# 0 falls back to `HEARTH_VRAM_DEDICATED_GB`; 0 there too turns the check off.
+VRAM_USABLE_GB: float = _float("HEARTH_VRAM_USABLE_GB", 0.0)
+
+# How long a generation waits for other processes to give VRAM back before it is
+# refused. **Not measured**: ComfyUI's `/free` answers before the memory is back,
+# and a few seconds is what separates "still releasing" from "holding it".
+VRAM_HEADROOM_WAIT_SEC: float = _float("HEARTH_VRAM_HEADROOM_WAIT_SEC", 15.0)
+
 # The image model used when a request does not name one.
 DEFAULT_IMAGE_MODEL: str = _str("HEARTH_IMAGE_MODEL", "sdxl")
 

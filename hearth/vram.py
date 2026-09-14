@@ -88,6 +88,44 @@ class VramOverError(RuntimeError):
         return {"shared_gb": self.shared_gb, "dedicated_gb": self.dedicated_gb, "pid": self.pid}
 
 
+class VramShortError(RuntimeError):
+    """A generation was not started, because the card does not have room for it.
+
+    **Refused before the load, not discovered after it.** When every process
+    together reaches what the card can hold, the driver either spills into
+    shared memory or fails the runner's command submit outright, and the
+    second ends the runner's process minutes into the work (measured
+    2026-09-14). A runner that declares what it needs (`vram_peak_gb`, runner
+    contract §3) is therefore not started while others hold the room, and the
+    error says who holds it.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        need_gb: float,
+        others_gb: float,
+        usable_gb: float,
+        holders: list[dict[str, Any]],
+    ) -> None:
+        super().__init__(message)
+        self.need_gb = need_gb
+        self.others_gb = others_gb
+        self.usable_gb = usable_gb
+        self.holders = holders
+
+    @property
+    def details(self) -> dict[str, Any]:
+        """Extra fields for the error line (`docs/protocol.md` §6)."""
+        return {
+            "need_gb": self.need_gb,
+            "others_gb": self.others_gb,
+            "usable_gb": self.usable_gb,
+            "holders": self.holders,
+        }
+
+
 # --- PDH, through ctypes ------------------------------------------------------
 
 _PDH_FMT_LARGE = 0x00000400
@@ -134,7 +172,12 @@ def available() -> bool:
 
 
 def _process_parents() -> dict[int, int]:
-    """Every running process's parent, as one snapshot.
+    """Every running process's parent, as one snapshot (`_process_table`)."""
+    return {pid: parent for pid, (parent, _name) in _process_table().items()}
+
+
+def _process_table() -> dict[int, tuple[int, str]]:
+    """Every running process's parent and executable name, as one snapshot.
 
     **A venv's `python.exe` re-executes the base interpreter**, so the process
     holding the VRAM is a *child* of the one hearth started - measured
@@ -152,15 +195,15 @@ def _process_parents() -> dict[int, int]:
         return {}
     entry = _ProcessEntry()
     entry.dwSize = ctypes.sizeof(_ProcessEntry)
-    parents: dict[int, int] = {}
+    table: dict[int, tuple[int, str]] = {}
     try:
         ok = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
         while ok:
-            parents[int(entry.th32ProcessID)] = int(entry.th32ParentProcessID)
+            table[int(entry.th32ProcessID)] = (int(entry.th32ParentProcessID), entry.szExeFile)
             ok = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
     finally:
         kernel32.CloseHandle(snapshot)
-    return parents
+    return table
 
 
 def _family(root: int, parents: dict[int, int]) -> set[int]:
@@ -477,3 +520,76 @@ class Sampler:
 # **One sampler for the process.** The counters are global, and a second open
 # query would cost a second thread for the same numbers.
 SAMPLER = Sampler()
+
+
+@dataclass
+class Holding:
+    """Who holds the card right now: the adapter's total, and every process on it."""
+
+    used_gb: float
+    by_pid: dict[int, float]
+    names: dict[int, str]
+    parents: dict[int, int]
+
+
+def read_now() -> Holding | None:
+    """Read the card once, every process included. **None where it cannot be read.**
+
+    Not the sampler's reading: the sampler only resolves the processes it was
+    asked to watch, and the question here is about everyone else. A query opened
+    and closed on the calling thread (PDH queries belong to one thread) costs a
+    few milliseconds plus the process snapshot's 7-10 ms, which is nothing
+    against the minute a load takes.
+    """
+    if not available():
+        return None
+    try:
+        query = _Query()
+    except OSError:
+        return None
+    try:
+        raw = query.collect()
+    except OSError:
+        return None
+    finally:
+        query.close()
+    adapter = raw[_ADAPTER_DEDICATED]
+    luid = max(adapter, key=lambda name: adapter[name], default="")
+    per_pid = Sampler._per_pid(raw[_PROCESS_DEDICATED], luid)
+    table = _process_table()
+    return Holding(
+        used_gb=adapter.get(luid, 0) / _GB,
+        by_pid={pid: value / _GB for pid, value in per_pid.items()},
+        names={pid: name for pid, (_parent, name) in table.items()},
+        parents={pid: parent for pid, (parent, _name) in table.items()},
+    )
+
+
+def shortfall(
+    holding: Holding, *, need_gb: float, usable_gb: float, own_root: int
+) -> tuple[float, float, list[dict[str, Any]]]:
+    """How far a generation is from fitting, and who holds the difference.
+
+    Args:
+        holding: A reading (`read_now`).
+        need_gb: What the runner declared it needs, weights included.
+        usable_gb: What every process together can hold.
+        own_root: The runner's process, when it is already running. **It and
+            its children are not "others"**: its weights are part of `need_gb`.
+
+    Returns:
+        `(short_gb, others_gb, holders)`. **`short_gb <= 0` means it fits.**
+        `holders` is the largest other processes, at most five, largest first.
+    """
+    own = _family(own_root, holding.parents) if own_root > 0 else set()
+    own_gb = sum(holding.by_pid.get(pid, 0.0) for pid in own)
+    others_gb = max(holding.used_gb - own_gb, 0.0)
+    holders = sorted(
+        (
+            {"pid": pid, "name": holding.names.get(pid, "?"), "dedicated_gb": round(gb, 2)}
+            for pid, gb in holding.by_pid.items()
+            if pid not in own and gb >= 0.1
+        ),
+        key=lambda entry: -entry["dedicated_gb"],
+    )[:5]
+    return others_gb + need_gb - usable_gb, others_gb, holders
