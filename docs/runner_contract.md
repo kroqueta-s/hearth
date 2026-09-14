@@ -80,6 +80,7 @@ never calls a method a capability table did not claim, so nothing else changes.
     "texture_mesh": {"rembg": {"type": "bool", "default": true},
                      "save_glb": {"type": "bool", "default": false}}
   },
+  "vram_peak_gb": {"image_to_mesh": 18.0, "texture_mesh": 11.5},
   "notes": "Free text. Anything a caller should know that the fields cannot say."
 }
 ```
@@ -109,6 +110,15 @@ never calls a method a capability table did not claim, so nothing else changes.
   it did**. The fallback is for old runners, not a default.
 - **hearth does not validate either table.** Only the runner knows what its
   values mean, so checking them is the runner's job.
+- **`vram_peak_gb` is optional**: per method, the most dedicated VRAM the
+  runner's process family reaches **at its default settings, weights included,
+  measured** - not estimated. hearth uses it to refuse a generation while other
+  processes hold that room (`VramShortError`, [protocol §6](protocol.md)),
+  because a runner started without it can have its process aborted by the
+  driver minutes in. **Round a measured peak up**: a sample taken every second
+  misses the top of a short surge. A runner that does not declare it is never
+  refused, and one whose settings can raise the peak well above the default
+  should say so in `notes`.
 
 ## 4. `image_to_mesh` arguments
 

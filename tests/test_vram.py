@@ -56,9 +56,9 @@ def test_a_sample_arrives_and_is_not_nonsense() -> None:
     try:
         sample = _sampled(sampler)
         assert sample is not None, "no VRAM sample arrived within ten seconds"
-        assert sample.dedicated_used_gb > 0.0, (
-            f"the card reports {sample.dedicated_used_gb} GB in use, and a desktop uses some"
-        )
+        assert (
+            sample.dedicated_used_gb > 0.0
+        ), f"the card reports {sample.dedicated_used_gb} GB in use, and a desktop uses some"
         assert sample.dedicated_used_gb < 1024.0, sample.dedicated_used_gb
         assert sample.shared_used_gb >= 0.0, sample.shared_used_gb
         assert sample.sampled_at > 0.0, "a sample has to say when it was taken"
@@ -84,9 +84,9 @@ def test_asking_costs_nothing() -> None:
         for _ in range(20):
             sampler.status()
         each_ms = (time.perf_counter() - began) * 1000 / 20
-        assert each_ms < 5.0, (
-            f"reading the last sample took {each_ms:.2f} ms, which is a measurement"
-        )
+        assert (
+            each_ms < 5.0
+        ), f"reading the last sample took {each_ms:.2f} ms, which is a measurement"
     finally:
         sampler.stop()
 
@@ -116,9 +116,9 @@ def test_the_shape_is_the_one_the_protocol_promises() -> None:
         ):
             assert key in status, f"status.vram is missing {key}: {status}"
         assert status["shared_abort_gb"] == config.VRAM_SHARED_ABORT_GB
-        assert set(status["by_pid"]) <= {str(os.getpid())}, (
-            f"by_pid reported processes nobody asked about: {status['by_pid']}"
-        )
+        assert set(status["by_pid"]) <= {
+            str(os.getpid())
+        }, f"by_pid reported processes nobody asked about: {status['by_pid']}"
         sampler.forget(os.getpid())
         assert sampler.status()["by_pid"] == {}, "a forgotten process was still reported"
     finally:
@@ -141,6 +141,70 @@ def test_the_error_carries_the_numbers_and_not_only_a_sentence() -> None:
     exc = vram.VramOverError("spilled", shared_gb=2.5, dedicated_gb=31.2, pid=1234)
     assert exc.details == {"shared_gb": 2.5, "dedicated_gb": 31.2, "pid": 1234}, exc.details
     assert str(exc) == "spilled"
+
+
+def _holding(used: float, by_pid: dict[int, float], parents: dict[int, int]) -> vram.Holding:
+    """A reading made up for the arithmetic, with made-up process names."""
+    return vram.Holding(
+        used_gb=used,
+        by_pid=by_pid,
+        names={pid: f"p{pid}.exe" for pid in by_pid},
+        parents=parents,
+    )
+
+
+def test_a_generation_that_fits_is_not_short() -> None:
+    """The desktop alone and a runner that fits: nothing to refuse."""
+    holding = _holding(1.9, {10: 1.9}, {10: 1})
+    short, others, holders = vram.shortfall(holding, need_gb=18.0, usable_gb=29.9, own_root=0)
+    assert short <= 0, short
+    assert abs(others - 1.9) < 1e-9, others
+    assert holders == [{"pid": 10, "name": "p10.exe", "dedicated_gb": 1.9}], holders
+
+
+def test_the_measured_abort_is_refused() -> None:
+    """**The case that aborted on 2026-09-14**: 16 GB held elsewhere, an 18 GB runner."""
+    holding = _holding(17.99, {10: 1.9, 20: 16.09}, {10: 1, 20: 1})
+    short, others, holders = vram.shortfall(holding, need_gb=18.0, usable_gb=29.9, own_root=0)
+    assert short > 0, short
+    assert holders[0]["pid"] == 20, holders
+
+
+def test_the_runner_s_own_memory_is_not_someone_else_s() -> None:
+    """**A loaded runner holds its weights**, and they are already in its declared peak.
+
+    The venv launcher's child is the process with the memory, so the whole family
+    counts as the runner's.
+    """
+    holding = _holding(7.1, {10: 1.9, 30: 0.0, 31: 5.2}, {10: 1, 30: 2, 31: 30})
+    short, others, holders = vram.shortfall(holding, need_gb=18.0, usable_gb=29.9, own_root=30)
+    assert abs(others - 1.9) < 1e-9, others
+    assert short <= 0, short
+    assert all(h["pid"] not in (30, 31) for h in holders), holders
+
+
+def test_the_card_can_be_read_whole() -> None:
+    """On this platform a reading arrives, with names, and never less than nothing."""
+    holding = vram.read_now()
+    if not vram.available():
+        assert holding is None
+        return
+    assert holding is not None and holding.used_gb > 0, holding
+    assert holding.names, "no process names were read"
+
+
+def test_the_short_error_carries_who_holds_the_card() -> None:
+    """`docs/protocol.md` §6: the numbers and the holders travel, not only a sentence."""
+    holders = [{"pid": 20, "name": "python.exe", "dedicated_gb": 16.09}]
+    exc = vram.VramShortError(
+        "no room", need_gb=18.0, others_gb=17.99, usable_gb=29.9, holders=holders
+    )
+    assert exc.details == {
+        "need_gb": 18.0,
+        "others_gb": 17.99,
+        "usable_gb": 29.9,
+        "holders": holders,
+    }, exc.details
 
 
 def main() -> int:

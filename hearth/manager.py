@@ -464,6 +464,9 @@ class Manager:
         attempts = 0
         kept: list[str] = []
         while True:
+            # **Before every attempt**, not once: a death frees memory, and a
+            # retry is exactly when something else may have taken it.
+            self._ensure_headroom(name, method, relay)
             try:
                 result = self._generate_once(name, method, params, relay, attempts)
                 if kept:
@@ -531,6 +534,61 @@ class Manager:
             # against the table would otherwise see a load it cannot explain.
             shaped["attempts"] = attempt + 1
         return shaped
+
+    def _ensure_headroom(self, name: str, method: str, relay: Relay | None) -> None:
+        """Refuse a generation the card has no room for, after waiting a little.
+
+        **Only for a runner that declares what it needs** (`vram_peak_gb`, runner
+        contract §3), and only where the card can be read: an unknown need or an
+        unreadable card refuses nothing, because refusing on a guess would stop
+        work that fits. What it prevents is measured (`HEARTH_VRAM_USABLE_GB`):
+        a runner started while others hold the room either spills or has its
+        process aborted by the driver minutes in.
+
+        Raises:
+            VramShortError: When other processes still hold too much after
+                `HEARTH_VRAM_HEADROOM_WAIT_SEC`.
+        """
+        need = (self.capabilities(name).get("vram_peak_gb") or {}).get(method)
+        usable = config.VRAM_USABLE_GB or config.VRAM_DEDICATED_GB
+        if isinstance(need, bool) or not isinstance(need, (int, float)) or need <= 0:
+            return
+        if usable <= 0:
+            return
+        runner = self._runners.get(name)
+        deadline = time.monotonic() + max(config.VRAM_HEADROOM_WAIT_SEC, 0.0)
+        waiting = False
+        while True:
+            holding = vram.read_now()
+            if holding is None:
+                return
+            own = runner.pid() if runner is not None else 0
+            short, others, holders = vram.shortfall(
+                holding, need_gb=float(need), usable_gb=usable, own_root=own
+            )
+            if short <= 0:
+                return
+            if time.monotonic() >= deadline:
+                named = ", ".join(
+                    f"{h['name']} (pid {h['pid']}) {h['dedicated_gb']:.1f} GB" for h in holders
+                )
+                raise vram.VramShortError(
+                    f"{name} needs about {need:.1f} GB of VRAM for {method}, and other "
+                    f"processes hold {others:.1f} GB of the {usable:.1f} GB the card can use"
+                    f" ({named or 'no single process holds much'})",
+                    need_gb=float(need),
+                    others_gb=round(others, 2),
+                    usable_gb=float(usable),
+                    holders=holders,
+                )
+            if relay is not None and not waiting:
+                relay(
+                    "vram_wait",
+                    f"waiting for other processes to release {short:.1f} GB of VRAM "
+                    f"({name} needs about {need:.1f} GB)",
+                )
+                waiting = True
+            time.sleep(1.0)
 
     def _keep_stderr(self, name: str, method: str, params: dict[str, Any], attempt: int) -> str:
         """Write a dead runner's stderr beside the output, and say where.

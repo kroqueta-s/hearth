@@ -333,6 +333,7 @@ is worth branching on; the message is for a person.
 | `FileNotFoundError` | An input, a weight, or a repository is missing | Show the path |
 | `ValueError` | An unknown argument or a value out of range | Show it verbatim; it names the argument |
 | `VramOverError` | The work spilled out of the card into system memory | Say what to change. It carries `shared_gb`, `dedicated_gb` and `pid` |
+| `VramShortError` | **The generation was not started**: other processes hold the room its runner declared it needs | Name the holders. It carries `need_gb`, `others_gb`, `usable_gb` and `holders` (`pid`, `name`, `dedicated_gb`, largest first) |
 | `RuntimeError` | Generation failed, or ComfyUI is not running | Show the message |
 
 **`VramOverError` is a failure that would otherwise not have been one.** Going
@@ -344,6 +345,17 @@ So hearth watches the shared usage of ComfyUI and of the running runner, and pas
 taking the prompt out of ComfyUI's queue, or ending the runner's process. **The
 numbers on the error are the argument for the advice**: a smaller image, fewer
 steps, or a model that fits.
+
+**`VramShortError` is the same limit met before the work instead of during it.**
+When every process together reaches what the card can hold, the driver does not
+only spill: measured on 2026-09-14, it also fails a runner's command submit with
+PAL `ErrorOutOfGpuMemory`, which ends that process minutes into a generation. So
+before each attempt of a generating method, hearth asks ComfyUI to free its
+models, reads the card, and compares **what the other processes hold plus the
+runner's declared `vram_peak_gb`** with `HEARTH_VRAM_USABLE_GB`. It waits up to
+`HEARTH_VRAM_HEADROOM_WAIT_SEC` for memory to come back (reporting `vram_wait`
+progress), and then refuses, naming the processes that hold the most. A runner
+that declares nothing, or a card that cannot be read, is never refused.
 
 **One hearth at a time, and it says so rather than fighting.** hearth holds a
 local port while it owns the card - `HEARTH_LOCK_PORT`, **8011 by default** - and
