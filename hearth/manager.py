@@ -555,16 +555,19 @@ class Manager:
             return
         if usable <= 0:
             return
-        runner = self._runners.get(name)
         deadline = time.monotonic() + max(config.VRAM_HEADROOM_WAIT_SEC, 0.0)
         waiting = False
         while True:
             holding = vram.read_now()
             if holding is None:
                 return
-            own = runner.pid() if runner is not None else 0
+            # **Every runner hearth runs is its own, not "others".** This check
+            # comes before the switch: a model still loaded from the last
+            # request is unloaded before this one loads, so counting it refused
+            # a switch for memory the switch itself was about to give back.
+            own = [runner.pid() for runner in list(self._runners.values())]
             short, others, holders = vram.shortfall(
-                holding, need_gb=float(need), usable_gb=usable, own_root=own
+                holding, need_gb=float(need), usable_gb=usable, own_roots=own
             )
             if short <= 0:
                 return
