@@ -191,6 +191,9 @@ def test_each_death_leaves_its_stderr_beside_the_output() -> None:
     record = kept.get("runner_stderr_1.txt", "")
     assert DEATH_LINE in record, record
     assert "exit code: 3 " in record, record
+    # **What the card held on the way to the death**, or a line saying the
+    # counters are not there - never silence about it.
+    assert "\nvram" in record, record
 
 
 def test_an_abort_leaves_the_python_line_it_happened_on() -> None:

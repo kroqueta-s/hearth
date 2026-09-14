@@ -248,9 +248,7 @@ class _Query:
         self._sizes: dict[str, int] = {}
         for path in _PATHS:
             counter = ctypes.c_void_p()
-            added = self._pdh.PdhAddEnglishCounterW(
-                self._handle, path, None, ctypes.byref(counter)
-            )
+            added = self._pdh.PdhAddEnglishCounterW(self._handle, path, None, ctypes.byref(counter))
             if added != 0:
                 raise OSError(f"PdhAddEnglishCounter failed for {path}")
             self._counters[path] = counter
@@ -309,6 +307,12 @@ def _pid_of(instance: str) -> int:
         return 0
 
 
+#: How many readings are kept for the record of a death. At the default two
+#: seconds apart this is a minute, which covers the ten seconds between a
+#: decoder starting and the aborts measured on 2026-09-13 several times over.
+HISTORY_SAMPLES = 30
+
+
 class Sampler:
     """Samples the GPU counters on a timer, so that asking costs nothing.
 
@@ -325,6 +329,11 @@ class Sampler:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._sample: Sample | None = None
+        # **The last minute, not only the last reading.** A runner that dies
+        # frees its memory as it goes, so the reading taken after a death says
+        # nothing about the moment before it; the record of a death wants the
+        # run-up (`Manager._keep_stderr`).
+        self._history: list[Sample] = []
         self._watched: dict[int, str] = {}
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -372,6 +381,8 @@ class Sampler:
                 else:
                     with self._lock:
                         self._sample = sample
+                        self._history.append(sample)
+                        del self._history[:-HISTORY_SAMPLES]
                 self._stop.wait(config.VRAM_SAMPLE_SEC)
         finally:
             query.close()
@@ -427,13 +438,17 @@ class Sampler:
         with self._lock:
             return self._sample
 
+    def history(self) -> list[Sample]:
+        """The last `HISTORY_SAMPLES` readings, oldest first."""
+        with self._lock:
+            return list(self._history)
+
     def status(self) -> dict[str, Any] | None:
         """The `status.vram` value: the last sample, or None where there is none."""
         sample = self.latest()
         if sample is None:
             return None
-        return sample.as_dict(shared_abort_gb=config.VRAM_SHARED_ABORT_GB,
-                              watched=self.watched())
+        return sample.as_dict(shared_abort_gb=config.VRAM_SHARED_ABORT_GB, watched=self.watched())
 
     def spilled(self, pid: int) -> tuple[float, float] | None:
         """Whether one process is over the shared-memory threshold.

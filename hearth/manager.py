@@ -157,6 +157,33 @@ def _contract_shape(name: str, result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _vram_run_up() -> list[str]:
+    """The card's memory over the last minute, one line a reading, for a death record.
+
+    **What the whole card held matters as much as what the runner did.** A
+    driver that fails a submit for want of GPU memory while the runner's own
+    total is far below the card is saying something about what else was on it,
+    or about how the memory was laid out - and only the counters from outside
+    see the first.
+    """
+    history = vram.SAMPLER.history()
+    if not history:
+        return ["vram: no readings (the counters are unavailable here)"]
+    now = time.time()
+    lines = ["vram (dedicated used / total, shared used; then each watched process):"]
+    for sample in history:
+        watched = ", ".join(
+            f"pid {pid} {entry['dedicated_gb']:.2f}/{entry['shared_gb']:.2f}"
+            for pid, entry in sorted(sample.by_pid.items())
+        )
+        lines.append(
+            f"  {sample.sampled_at - now:+6.1f}s  {sample.dedicated_used_gb:.2f}/"
+            f"{sample.dedicated_total_gb:.2f} GB, shared {sample.shared_used_gb:.2f} GB"
+            + (f"  [{watched}]" if watched else "")
+        )
+    return lines
+
+
 # How long a cancel waits on ComfyUI. **Short on purpose**: cancelling is
 # interactive, it is answered on the thread that reads stdin, and a caller that
 # has just pressed cancel usually presses stop next. The default of thirty
@@ -532,6 +559,7 @@ class Manager:
             f"exit code: {named}",
             f"recorded: {datetime.now().isoformat(timespec='seconds')}",
             f"stderr lines: {len(lines)} (only the last {STDERR_LINES} are ever kept)",
+            *_vram_run_up(),
             "",
         ]
         target = Path(out) / f"runner_stderr_{attempt}.txt"
