@@ -56,8 +56,17 @@ result is there so that a caller timing the call can explain the extra load:
 
 ```json
 {"id": 1, "event": "progress", "stage": "retry", "message": "trellis2 died without answering; ..."}
-{"id": 1, "event": "result", "result": {"mesh_path": "C:/out/raw.ply", "attempts": 2}}
+{"id": 1, "event": "result", "result": {"mesh_path": "C:/out/raw.ply", "attempts": 2, "runner_logs": ["C:/out/runner_stderr_1.txt"]}}
 ```
+
+**Every death leaves its stderr beside the output**, as
+`runner_stderr_<attempt>.txt` in the request's `out_dir`: which runner and method,
+the attempt, the exit code, and every line the process wrote (up to the last
+400). A result that took more than one attempt names those files in
+`runner_logs`; an error after the retries are spent names them in its message.
+**Keep them when a run fails.** A driver fault that happens one run in several
+can only be studied from the runs that recorded it, and a retry that succeeded
+is one of those.
 
 ## 2. Two classes of method
 

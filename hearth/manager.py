@@ -22,12 +22,14 @@ import socket
 import sys
 import threading
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from . import config, vram
 from .comfy import ComfyUIClient
 from .comfy_process import COMFY
-from .runner_client import Relay, RunnerError, RunnerProcess
+from .runner_client import STDERR_LINES, Relay, RunnerError, RunnerProcess
 from .vram import VramOverError
 
 # What `busy` is called while the work is in another application's process.
@@ -433,12 +435,25 @@ class Manager:
         if not caps.get(method, False):
             raise RunnerError(f"{name} does not support {method} (check its capabilities)")
         attempts = 0
+        kept: list[str] = []
         while True:
             try:
-                return self._generate_once(name, method, params, relay, attempts)
-            except RunnerError:
+                result = self._generate_once(name, method, params, relay, attempts)
+                if kept:
+                    result["runner_logs"] = kept
+                return result
+            except RunnerError as exc:
                 attempts += 1
-                if attempts > max(config.GENERATE_RETRIES, 0) or not self._died_unasked(name):
+                died = self._died_unasked(name)
+                if died:
+                    record = self._keep_stderr(name, method, params, attempts)
+                    if record:
+                        kept.append(record)
+                if attempts > max(config.GENERATE_RETRIES, 0) or not died:
+                    if kept:
+                        raise RunnerError(
+                            f"{exc}\nstderr of each death: {', '.join(kept)}"
+                        ) from exc
                     raise
                 if relay is not None:
                     relay(
@@ -489,6 +504,44 @@ class Manager:
             # against the table would otherwise see a load it cannot explain.
             shaped["attempts"] = attempt + 1
         return shaped
+
+    def _keep_stderr(self, name: str, method: str, params: dict[str, Any], attempt: int) -> str:
+        """Write a dead runner's stderr beside the output, and say where.
+
+        **In memory it lasted until the next start**, and only its last twenty
+        lines reached the caller - so a death that a retry covered left nothing
+        anyone could read, and a fault that happens one run in several could
+        not be counted. The request's `out_dir` is where the rest of that run
+        already is, which keeps a death with the work it interrupted.
+
+        Returns:
+            The file written, or "" when there was nowhere to write it. **Failing
+            to keep a record never fails the request**; it is said on stderr.
+        """
+        runner = self._runners.get(name)
+        out = str(params.get("out_dir") or "").strip()
+        if runner is None or not out:
+            return ""
+        code = runner.last_exit_code
+        named = "unknown" if code is None else f"{code} (0x{code & 0xFFFFFFFF:08X})"
+        lines = runner.stderr_all()
+        header = [
+            f"runner: {name}",
+            f"method: {method}",
+            f"attempt: {attempt}",
+            f"exit code: {named}",
+            f"recorded: {datetime.now().isoformat(timespec='seconds')}",
+            f"stderr lines: {len(lines)} (only the last {STDERR_LINES} are ever kept)",
+            "",
+        ]
+        target = Path(out) / f"runner_stderr_{attempt}.txt"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("\n".join(header + lines) + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"[hearth] could not keep {name}'s stderr at {target}: {exc}", file=sys.stderr)
+            return ""
+        return str(target)
 
     def _died_unasked(self, name: str) -> bool:
         """Did the runner's process go away on its own, rather than being ended?
