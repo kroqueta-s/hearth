@@ -161,8 +161,13 @@ was clamped, the clamped one is the true answer.
 - **Never use `metrics.gen_sec` as a pass/fail signal.** It varies by several
   times for identical settings, and the first run on a machine can be an order
   of magnitude slower while kernels are tuned.
-- `extra` holds whatever intermediate files the model produced. hearth passes it
-  through untouched.
+- `extra` holds whatever else the run produced, by name. hearth passes it
+  through untouched. **It is not only for intermediates**: a runner that makes
+  two representations of one generation - a printable mesh and a textured copy
+  of it, say - puts the second here rather than inventing a method for it. How a
+  caller is meant to read that is in
+  [`docs/protocol.md` §3.1a](protocol.md), and the short of it is that a key is
+  used when it is there and never expected because of which model answered.
 
 ## 5a. `segment_mesh`: a mesh in, a label per face out
 

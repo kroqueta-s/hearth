@@ -131,6 +131,43 @@ one of the names in `status.image_models`; omitting it uses the default from
 route asked for while ComfyUI is `starting` waits for it (§4a) rather than
 failing a race a person cannot win.
 
+#### 3.1a What comes back, and how to read it
+
+Every mesh route answers with the same shape ([contract
+§5](runner_contract.md#5-image_to_mesh-results)). Four of its fields decide what
+a caller can do, and three of them are easy to miss:
+
+| Field | What to do with it |
+|---|---|
+| `mesh_path` | The mesh the method is named for. **Always there** |
+| `extra` | Other files the same run produced, by name. **Absent, empty, or full** |
+| `up_axis`, `forward_axis` | Which way the mesh is oriented, or `null` |
+| `params_used` | What the runner actually ran with, for repeating a generation |
+
+**`extra` is where a second file lands.** A runner that produces more than one
+thing in a single call puts the rest here rather than inventing a method: a
+background-removed image under `foreground`, a textured copy under
+`textured_glb`. The keys belong to the runner, not to hearth, and hearth passes
+the dictionary through untouched.
+
+So a caller **looks for a key and uses it if it is there**. It does not require
+one, and it does not decide which keys to expect from the model's name -
+the same rule as `capabilities` (§3). A runner that gains a second output
+becomes a caller that can offer it, with no change here.
+
+**A file in `extra` may be a format the caller does not import, and may not be
+the same kind of thing as `mesh_path`.** One of the runners here answers
+`image_to_mesh` with a printable mesh (`.ply`, carrying vertex colours) and puts
+a textured copy in `extra` (`.glb`, carrying a UV atlas with metallic, roughness
+and alpha). Those are two representations of one generation, not a mesh and an
+improvement on it: **which one a caller wants depends on what the caller is
+for**, a printable solid or something to look at. A caller that imports only
+`mesh_path` is not broken; it simply has not been given the choice.
+
+This is an example, not a rule to code against - **no caller should be looking
+for that key because of the model that produces it.** Read the dictionary that
+came back, take what you can use, and leave the rest.
+
 #### 3.2 There is no "do the whole flow" method
 
 Chaining belongs to the caller, and this is deliberate. A pipeline method inside
