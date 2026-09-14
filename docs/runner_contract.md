@@ -178,6 +178,15 @@ was clamped, the clamped one is the true answer.
   caller is meant to read that is in
   [`docs/protocol.md` §3.1a](protocol.md), and the short of it is that a key is
   used when it is there and never expected because of which model answered.
+- **A textured copy goes under `extra.textured_glb`, as a binary glTF.** One
+  file: the same geometry as `mesh_path`, in the same frame and scale, with its
+  UVs, the colour texture, and - when the model makes them - metalness and
+  roughness packed into a glTF `metallicRoughnessTexture` (blue and green).
+  `mesh_path` stays the PLY. This is the one `extra` key with a fixed meaning,
+  decided 2026-09-15 across hearth and its callers: **geometry travels as PLY,
+  appearance as GLB**, because the face order and the absence of any conversion
+  matter only to the first. Write it without `bpy` (trimesh is enough), and
+  write it beside its name then rename it (§9).
 
 ## 5a. `segment_mesh`: a mesh in, a label per face out
 

@@ -165,17 +165,26 @@ the same rule as `capabilities` (§3). A runner that gains a second output
 becomes a caller that can offer it, with no change here.
 
 **A file in `extra` may be a format the caller does not import, and may not be
-the same kind of thing as `mesh_path`.** One of the runners here answers
-`image_to_mesh` with a printable mesh (`.ply`, carrying vertex colours) and puts
-a textured copy in `extra` (`.glb`, carrying a UV atlas with metallic, roughness
-and alpha). Those are two representations of one generation, not a mesh and an
-improvement on it: **which one a caller wants depends on what the caller is
-for**, a printable solid or something to look at. A caller that imports only
-`mesh_path` is not broken; it simply has not been given the choice.
+the same kind of thing as `mesh_path`.** A runner may answer with a printable mesh
+(`.ply`, perhaps carrying vertex colours) and a textured copy (`.glb`, carrying
+UVs with colour, metalness and roughness). Those are two representations of one
+generation, not a mesh and an improvement on it: **which one a caller wants
+depends on what the caller is for**, a printable solid or something to look at.
+A caller that imports only `mesh_path` is not broken; it simply has not been
+given the choice.
 
-This is an example, not a rule to code against - **no caller should be looking
-for that key because of the model that produces it.** Read the dictionary that
-came back, take what you can use, and leave the rest.
+**`textured_glb` is the one key with a fixed meaning** ([contract
+§5](runner_contract.md#5-image_to_mesh-results), decided 2026-09-15): a binary
+glTF of the same geometry, in the same frame and scale as `mesh_path`. A caller
+may look for it by name - still only when it is there, and **never because of
+which model answered**. Every other key belongs to the runner: read the
+dictionary that came back, take what you can use, and leave the rest.
+
+**Which format for what**, so that a caller knows what each file is for:
+geometry that anything is measured or cut from is **PLY** (`mesh_path`);
+appearance is **GLB** (`extra.textured_glb`). A glTF importer is free to convert
+axes and units and to drop duplicate faces, which is harmless for a copy to look
+at and wrong for a mesh whose faces are counted.
 
 #### 3.2 There is no "do the whole flow" method
 
