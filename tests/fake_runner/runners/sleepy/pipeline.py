@@ -108,6 +108,10 @@ def image_to_mesh(params: dict[str, Any], progress: Progress) -> dict[str, Any]:
             # The line a real driver leaves before the abort, in spirit: the
             # record hearth keeps of a death is checked for it.
             print(DEATH_LINE, file=sys.stderr, flush=True)
+            # `abort` is how the real one ends (`abort()` from torch's handler),
+            # and it is the only way a fault handler gets to speak.
+            if os.environ.get("SLEEPY_DIE_HOW", "") == "abort":
+                os.abort()
             os._exit(3)
 
     load(progress)
