@@ -53,6 +53,13 @@ class RunnerError(RuntimeError):
     """A runner would not start, or the conversation with it failed."""
 
 
+#: How much of a runner's stderr is kept. A death on gfx1151 with the HIP
+#: runtime's logging on left 85 to 105 lines from start to abort (measured
+#: 2026-09-13, four aborts), so this holds a whole short life and the end of a
+#: long one.
+STDERR_LINES = 400
+
+
 class RunnerProcess:
     """One runner. **Only one is ever alive at a time**, because there is one GPU."""
 
@@ -60,7 +67,11 @@ class RunnerProcess:
         self.name = name
         self._spec = spec
         self._proc: subprocess.Popen[str] | None = None
-        self._stderr: deque[str] = deque(maxlen=400)
+        self._stderr: deque[str] = deque(maxlen=STDERR_LINES)
+        self._drain: threading.Thread | None = None
+        # How the last process ended, when it ended without being asked to.
+        # **The only name a driver abort leaves**: 0xC0000409 is `abort()`.
+        self.last_exit_code: int | None = None
         self._next_id = 1
         # **One conversation at a time with this process.** Control methods are
         # answered on another thread (`docs/protocol.md` §2), and two requests
@@ -131,6 +142,10 @@ class RunnerProcess:
         # hand in control of it.
         if config.RUNNER_HIP_LOG_LEVEL > 0:
             env.setdefault("AMD_LOG_LEVEL", str(config.RUNNER_HIP_LOG_LEVEL))
+        # **A new process starts a new record.** The lines of one that died
+        # would otherwise be read as the start of this one's.
+        self._stderr.clear()
+        self.last_exit_code = None
         self._proc = subprocess.Popen(
             [str(python), "-m", module],
             cwd=cwd or None,
@@ -144,7 +159,8 @@ class RunnerProcess:
             env=env,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
-        threading.Thread(target=self._drain_stderr, daemon=True).start()
+        self._drain = threading.Thread(target=self._drain_stderr, daemon=True)
+        self._drain.start()
 
     def stop(self, *, timeout: float = 10.0) -> None:
         """Ask it to shut down, and end it if it does not."""
@@ -242,11 +258,35 @@ class RunnerProcess:
                 err = event.get("error") or {}
                 raise RunnerError(f"{self.name}: {err.get('type')}: {err.get('message')}")
 
+        self._collect_death()
         raise RunnerError(f"{self.name}: the runner exited:\n{self.stderr_tail()}")
+
+    def _collect_death(self, timeout: float = 5.0) -> None:
+        """Wait for a process whose stdout closed to finish dying, and read the rest.
+
+        **stdout closing is not the end of stderr.** The drain is another
+        thread, and the lines an abort prints last - the ones that name the
+        fault - are the likeliest to be still in the pipe when the answer
+        stops. So the exit code is waited for and the drain is let finish,
+        briefly, before anything is reported.
+        """
+        proc = self._proc
+        if proc is not None:
+            try:
+                self.last_exit_code = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                self.last_exit_code = None
+        drain = self._drain
+        if drain is not None:
+            drain.join(timeout=timeout)
 
     def stderr_tail(self, lines: int = 20) -> str:
         """The tail of the runner's stderr, for diagnosis."""
         return "\n".join(list(self._stderr)[-lines:])
+
+    def stderr_all(self) -> list[str]:
+        """Every line of stderr kept for the current (or last) process."""
+        return list(self._stderr)
 
     def _drain_stderr(self) -> None:
         """Drain stderr. **Left unread, the pipe fills and the runner stops.**"""

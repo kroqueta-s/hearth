@@ -115,6 +115,14 @@ def _answers(events: list[dict[str, Any]], request_id: int) -> dict[str, Any]:
 
 def _generate(deaths: int, retries: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Ask for a mesh from a runner set to die `deaths` times first."""
+    answer, events, _kept = _generate_keeping(deaths, retries)
+    return answer, events
+
+
+def _generate_keeping(
+    deaths: int, retries: int
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, str]]:
+    """The same, plus every stderr record hearth left in the run directory, by name."""
     with tempfile.TemporaryDirectory() as raw:
         out = Path(raw)
         image = out / "in.png"
@@ -135,7 +143,8 @@ def _generate(deaths: int, retries: int) -> tuple[dict[str, Any], list[dict[str,
             ],
             _env(deaths=deaths, retries=retries, out_dir=out),
         )
-        return _answers(events, 1), events
+        kept = {p.name: p.read_text(encoding="utf-8") for p in out.glob("runner_stderr_*.txt")}
+        return _answers(events, 1), events, kept
 
 
 def test_a_runner_that_died_is_asked_once_more() -> None:
@@ -160,6 +169,43 @@ def test_it_gives_up_when_the_retries_are_spent() -> None:
     """Two deaths against one retry is an error, not a loop."""
     answer, _events = _generate(deaths=2, retries=1)
     assert answer.get("event") == "error", answer
+
+
+#: What the pretend runner writes on its way out (`runners/sleepy/pipeline.py`).
+DEATH_LINE = "sleepy: the driver took the process away (pretend)"
+
+
+def test_each_death_leaves_its_stderr_beside_the_output() -> None:
+    """**A death that was retried past still leaves a record**, named in the result.
+
+    The runner's stderr was kept only in memory and only its last twenty lines
+    reached anyone, so an abort that a retry covered left nothing at all - and
+    a driver fault that happens one run in several cannot be studied from runs
+    that did not keep it.
+    """
+    answer, _events, kept = _generate_keeping(deaths=1, retries=1)
+    assert answer.get("event") == "result", answer
+    logs = answer["result"].get("runner_logs") or []
+    assert [Path(p).name for p in logs] == ["runner_stderr_1.txt"], answer["result"]
+    record = kept.get("runner_stderr_1.txt", "")
+    assert DEATH_LINE in record, record
+    assert "exit code: 3 " in record, record
+
+
+def test_a_death_that_is_the_answer_names_its_records() -> None:
+    """When the retries are spent, the error says where every death's stderr is."""
+    answer, _events, kept = _generate_keeping(deaths=2, retries=1)
+    assert answer.get("event") == "error", answer
+    assert sorted(kept) == ["runner_stderr_1.txt", "runner_stderr_2.txt"], sorted(kept)
+    message = str(answer["error"].get("message", ""))
+    assert "runner_stderr_1.txt" in message and "runner_stderr_2.txt" in message, message
+
+
+def test_a_call_that_worked_keeps_no_record() -> None:
+    """Nothing died, so nothing is written and nothing is named."""
+    answer, _events, kept = _generate_keeping(deaths=0, retries=1)
+    assert answer.get("event") == "result", answer
+    assert not kept and "runner_logs" not in answer["result"], (kept, answer["result"])
 
 
 def test_retries_can_be_turned_off() -> None:

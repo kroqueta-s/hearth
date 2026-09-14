@@ -15,12 +15,16 @@ older wording did, which is how the promotion in `Manager` is checked.
 from __future__ import annotations
 
 import os
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 Progress = Callable[..., None]
+
+#: What a pretend death writes to stderr on its way out.
+DEATH_LINE = "sleepy: the driver took the process away (pretend)"
 
 # A box, in normalized scale, written as ASCII PLY. Nothing reads it but the
 # path has to point at a real file: a caller told a mesh exists will open it.
@@ -101,6 +105,9 @@ def image_to_mesh(params: dict[str, Any], progress: Progress) -> dict[str, Any]:
         so_far = int(tally.read_text(encoding="ascii")) if tally.exists() else 0
         if so_far < deaths:
             tally.write_text(str(so_far + 1), encoding="ascii")
+            # The line a real driver leaves before the abort, in spirit: the
+            # record hearth keeps of a death is checked for it.
+            print(DEATH_LINE, file=sys.stderr, flush=True)
             os._exit(3)
 
     load(progress)
