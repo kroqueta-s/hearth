@@ -44,6 +44,10 @@ def _gpu_busy() -> bool:
     return manager.GPU_BUSY_WATCH.busy()
 
 
+#: hearth's own checkout, where results go when `HEARTH_OUTPUT_DIR` says nothing.
+_HEARTH_ROOT = Path(__file__).resolve().parent.parent
+
+
 def _run_dir(params: dict[str, Any]) -> Path:
     """Where this request writes: what the caller asked for, or a fresh directory.
 
@@ -51,9 +55,20 @@ def _run_dir(params: dict[str, Any]) -> Path:
     piece of work in one place.** Without that, a flow of four steps leaves four
     directories named by the second they started, and putting them back together
     afterwards is guesswork.
+
+    **Always absolute.** The path is handed to a runner, and a runner resolves a
+    relative one against its own working directory - its own repository. An
+    unset `HEARTH_OUTPUT_DIR` (a checkout without `.env`) made the default `.`,
+    so hearth made an empty directory in its own checkout and the runner wrote
+    the results into its (found 2026-09-15: `tests/fake_runner/<time>/raw.ply`).
+    A relative `out_dir` is resolved against hearth's working directory, and no
+    setting at all falls back to hearth's own `output/`.
     """
     asked = str(params.get("out_dir") or "").strip()
-    run_dir = Path(asked) if asked else config.OUTPUT_DIR / datetime.now().strftime("%Y%m%d-%H%M%S")
+    unset = str(config.OUTPUT_DIR) in ("", ".")
+    base = _HEARTH_ROOT / "output" if unset else config.OUTPUT_DIR
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_dir = (Path(asked) if asked else base / stamp).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
@@ -305,9 +320,7 @@ def _image(method: str, params: dict[str, Any], responder: Responder) -> dict[st
         ValueError: If a parameter was never declared for this route.
     """
     consumed = {"out_dir", "model", "image_model", _IMAGE_INPUT.get(method, "")}
-    used = imagegen.effective_params(
-        method, {k: v for k, v in params.items() if k not in consumed}
-    )
+    used = imagegen.effective_params(method, {k: v for k, v in params.items() if k not in consumed})
     model = str(params.get("image_model") or config.DEFAULT_IMAGE_MODEL)
 
     run_dir = _run_dir(params)
@@ -388,7 +401,6 @@ def _image_now(  # noqa: PLR0913 - one call, and every argument is already compu
         out["source_path"] = str(params[source])
         out["source_argument"] = source
     return out
-
 
 
 def _queued(client: comfy.ComfyUIClient) -> Any:
