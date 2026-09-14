@@ -46,6 +46,7 @@ import ctypes
 import sys
 import threading
 import time
+from collections.abc import Iterable
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from typing import Any
@@ -566,7 +567,7 @@ def read_now() -> Holding | None:
 
 
 def shortfall(
-    holding: Holding, *, need_gb: float, usable_gb: float, own_root: int
+    holding: Holding, *, need_gb: float, usable_gb: float, own_roots: Iterable[int]
 ) -> tuple[float, float, list[dict[str, Any]]]:
     """How far a generation is from fitting, and who holds the difference.
 
@@ -574,14 +575,20 @@ def shortfall(
         holding: A reading (`read_now`).
         need_gb: What the runner declared it needs, weights included.
         usable_gb: What every process together can hold.
-        own_root: The runner's process, when it is already running. **It and
-            its children are not "others"**: its weights are part of `need_gb`.
+        own_roots: The processes that are not "others": **every runner the
+            caller runs**, not only the one about to generate. The one about to
+            generate has its weights in `need_gb`; any other is unloaded before
+            it loads, so counting its memory would refuse a switch for memory
+            the switch itself gives back. Their children count with them.
 
     Returns:
         `(short_gb, others_gb, holders)`. **`short_gb <= 0` means it fits.**
         `holders` is the largest other processes, at most five, largest first.
     """
-    own = _family(own_root, holding.parents) if own_root > 0 else set()
+    own: set[int] = set()
+    for root in own_roots:
+        if root > 0:
+            own |= _family(root, holding.parents)
     own_gb = sum(holding.by_pid.get(pid, 0.0) for pid in own)
     others_gb = max(holding.used_gb - own_gb, 0.0)
     holders = sorted(

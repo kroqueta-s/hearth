@@ -156,7 +156,7 @@ def _holding(used: float, by_pid: dict[int, float], parents: dict[int, int]) -> 
 def test_a_generation_that_fits_is_not_short() -> None:
     """The desktop alone and a runner that fits: nothing to refuse."""
     holding = _holding(1.9, {10: 1.9}, {10: 1})
-    short, others, holders = vram.shortfall(holding, need_gb=18.0, usable_gb=29.9, own_root=0)
+    short, others, holders = vram.shortfall(holding, need_gb=18.0, usable_gb=29.9, own_roots=())
     assert short <= 0, short
     assert abs(others - 1.9) < 1e-9, others
     assert holders == [{"pid": 10, "name": "p10.exe", "dedicated_gb": 1.9}], holders
@@ -165,7 +165,7 @@ def test_a_generation_that_fits_is_not_short() -> None:
 def test_the_measured_abort_is_refused() -> None:
     """**The case that aborted on 2026-09-14**: 16 GB held elsewhere, an 18 GB runner."""
     holding = _holding(17.99, {10: 1.9, 20: 16.09}, {10: 1, 20: 1})
-    short, others, holders = vram.shortfall(holding, need_gb=18.0, usable_gb=29.9, own_root=0)
+    short, others, holders = vram.shortfall(holding, need_gb=18.0, usable_gb=29.9, own_roots=())
     assert short > 0, short
     assert holders[0]["pid"] == 20, holders
 
@@ -177,10 +177,29 @@ def test_the_runner_s_own_memory_is_not_someone_else_s() -> None:
     counts as the runner's.
     """
     holding = _holding(7.1, {10: 1.9, 30: 0.0, 31: 5.2}, {10: 1, 30: 2, 31: 30})
-    short, others, holders = vram.shortfall(holding, need_gb=18.0, usable_gb=29.9, own_root=30)
+    short, others, holders = vram.shortfall(holding, need_gb=18.0, usable_gb=29.9, own_roots=(30,))
     assert abs(others - 1.9) < 1e-9, others
     assert short <= 0, short
     assert all(h["pid"] not in (30, 31) for h in holders), holders
+
+
+def test_a_model_about_to_be_unloaded_is_not_someone_else_s() -> None:
+    """**A switch is not refused for the memory the switch gives back.**
+
+    The check runs before the previous model is unloaded. A runner still holding
+    16 GB from the last request is one of hearth's own, and passed as such; an
+    18 GB runner then fits. Counting it as "others" refused every switch between
+    two large models.
+    """
+    holding = _holding(18.0, {10: 1.9, 40: 0.0, 41: 16.1}, {10: 1, 40: 2, 41: 40})
+    refused, _others, _holders = vram.shortfall(holding, need_gb=18.0, usable_gb=29.9, own_roots=())
+    assert refused > 0, "the arithmetic itself should see the 16 GB as others"
+    short, others, holders = vram.shortfall(
+        holding, need_gb=18.0, usable_gb=29.9, own_roots=(0, 40)
+    )
+    assert abs(others - 1.9) < 1e-9, others
+    assert short <= 0, short
+    assert all(h["pid"] not in (40, 41) for h in holders), holders
 
 
 def test_the_card_can_be_read_whole() -> None:
