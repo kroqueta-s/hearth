@@ -142,6 +142,14 @@ class RunnerProcess:
         # hand in control of it.
         if config.RUNNER_HIP_LOG_LEVEL > 0:
             env.setdefault("AMD_LOG_LEVEL", str(config.RUNNER_HIP_LOG_LEVEL))
+        # **So that a death has a place.** The driver's lines say what failed
+        # but not which Python line asked for it, and the native stack under
+        # torch's abort handler resolves to the wrong symbols. Python's own
+        # fault handler writes the Python stack of every thread on `abort()`,
+        # on stderr, which is kept (measured 2026-09-14 in a runner's venv on
+        # Windows: `Fatal Python error: Aborted` and the frames, exit code 3).
+        # It costs nothing until the process is already dying.
+        env.setdefault("PYTHONFAULTHANDLER", "1")
         # **A new process starts a new record.** The lines of one that died
         # would otherwise be read as the start of this one's.
         self._stderr.clear()

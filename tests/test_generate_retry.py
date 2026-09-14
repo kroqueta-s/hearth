@@ -38,7 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 FAKE = REPO_ROOT / "tests" / "fake_runner"
 
 
-def _env(*, deaths: int, retries: int, out_dir: Path) -> dict[str, str]:
+def _env(*, deaths: int, retries: int, out_dir: Path, how: str = "") -> dict[str, str]:
     """One runner that sleeps, set to die a given number of times first.
 
     `HEARTH_LOCK_PORT=0` is not optional: the default is a real port and a
@@ -56,6 +56,7 @@ def _env(*, deaths: int, retries: int, out_dir: Path) -> dict[str, str]:
         "HEARTH_GENERATE_RETRIES": str(retries),
         "SLEEPY_LOAD_SEC": "0.05",
         "SLEEPY_DIE_TIMES": str(deaths),
+        "SLEEPY_DIE_HOW": how,
         "PYTHONIOENCODING": "utf-8",
         "PYTHONUNBUFFERED": "1",
     }
@@ -120,7 +121,7 @@ def _generate(deaths: int, retries: int) -> tuple[dict[str, Any], list[dict[str,
 
 
 def _generate_keeping(
-    deaths: int, retries: int
+    deaths: int, retries: int, how: str = ""
 ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, str]]:
     """The same, plus every stderr record hearth left in the run directory, by name."""
     with tempfile.TemporaryDirectory() as raw:
@@ -141,7 +142,7 @@ def _generate_keeping(
                 },
                 {"id": 2, "method": "shutdown"},
             ],
-            _env(deaths=deaths, retries=retries, out_dir=out),
+            _env(deaths=deaths, retries=retries, out_dir=out, how=how),
         )
         kept = {p.name: p.read_text(encoding="utf-8") for p in out.glob("runner_stderr_*.txt")}
         return _answers(events, 1), events, kept
@@ -190,6 +191,20 @@ def test_each_death_leaves_its_stderr_beside_the_output() -> None:
     record = kept.get("runner_stderr_1.txt", "")
     assert DEATH_LINE in record, record
     assert "exit code: 3 " in record, record
+
+
+def test_an_abort_leaves_the_python_line_it_happened_on() -> None:
+    """**An abort's record says where in Python it happened**, not only that it did.
+
+    The driver's lines name the failure and torch's native stack resolves to
+    the wrong symbols, so the one thing that places a death is Python's fault
+    handler, which hearth turns on for every runner.
+    """
+    answer, _events, kept = _generate_keeping(deaths=1, retries=1, how="abort")
+    assert answer.get("event") == "result", answer
+    record = kept.get("runner_stderr_1.txt", "")
+    assert "Fatal Python error: Aborted" in record, record
+    assert "in image_to_mesh" in record, record
 
 
 def test_a_death_that_is_the_answer_names_its_records() -> None:
