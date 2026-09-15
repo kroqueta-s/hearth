@@ -10,6 +10,18 @@ should track.
 
 ## Unreleased
 
+### `compose_prompt`: a runner that writes the prompt (2026-09-15)
+
+- **A new optional method, contract §5b**: a description typed in any language
+  in, an English prompt and negative prompt out, written for the format an image
+  model declares (`prompt_format`, below). The caller passes that format, so
+  hearth joins the image model and the prompt writer to nothing.
+- **It queues with the other runner methods** and asks ComfyUI to free its
+  models first, as they all do: a runner whose model is on the card needs the
+  room. The cost is an image model reloading after a prompt is written.
+- **A runner whose model is a child process takes the child with it** when it
+  ends (§5b). The orphan §10 prevents can otherwise happen one process further down.
+
 ### Image models say how to write their prompt (2026-09-15)
 
 - **FLUX's negative prompt was thrown away, and nothing said so.** Its workflow
