@@ -10,6 +10,20 @@ should track.
 
 ## Unreleased
 
+### Image models say how to write their prompt (2026-09-15)
+
+- **FLUX's negative prompt was thrown away, and nothing said so.** Its workflow
+  routes the negative through `ConditioningZeroOut` at a `cfg` of 1.0, so a
+  negative typed into a form changed nothing. Each image model's table now
+  carries `prompt_format.negative`, **read out of the workflow** rather than
+  declared beside it, with `negative_why` (`docs/protocol.md` §4).
+- **SDXL's workflow carried a negative prompt that never ran.** `negative`
+  defaulted to "" and always wrote over it. Its default is now the text the
+  workflow carries, per model, and `params_used` reports it.
+- **`prompt_format.style`** (`tags` or `natural`) and `max_words` come from
+  `HEARTH_IMAGE_MODEL_<KEY>_PROMPT_STYLE` and `_PROMPT_MAX_WORDS`. An undeclared
+  style is absent rather than guessed.
+
 ### Runner contract 3
 
 - **A result names its settings `params_used`**, not `params` (§5). Under the

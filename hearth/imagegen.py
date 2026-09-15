@@ -60,6 +60,119 @@ ROUTE_PARAMS: dict[str, dict[str, dict[str, Any]]] = {
 }
 
 
+#: The ways a model is known to read a prompt (`HEARTH_IMAGE_MODEL_<KEY>_PROMPT_STYLE`):
+#: comma-separated short phrases, or plain sentences.
+PROMPT_STYLES = frozenset({"tags", "natural"})
+
+# The ComfyUI node that throws a conditioning away. A negative prompt routed
+# through it is encoded and then replaced with zeros before the sampler sees it.
+_ZEROED = "ConditioningZeroOut"
+
+
+def read_negative(workflow: dict[str, Any]) -> dict[str, Any]:
+    """Whether a workflow's sampler reads its negative prompt, and what it says by default.
+
+    **Read out of the workflow rather than declared beside it**, because the
+    workflow is the file that is meant to be edited, and a declaration next to it
+    would be right until the day somebody changed one and not the other.
+
+    The sampler is the node with both a `negative` input and a `cfg`. At a `cfg`
+    of 1.0 or less the sampler never evaluates the unconditional branch, so
+    nothing on that input matters; otherwise the input is followed back through
+    whatever sits in front of it - a ControlNet apply, say - until it reaches a
+    text encoder, which is the default, or a zeroing node, which means it is
+    ignored.
+
+    Args:
+        workflow: An API-format workflow.
+
+    Returns:
+        `used` (bool), `default` (the encoder's text, or "") and `why` (why it is
+        not used, or ""). **A workflow this cannot follow counts as used**, with
+        no default: that is what it did before anything read it.
+    """
+    unknown = {"used": True, "default": "", "why": ""}
+    samplers = [
+        node
+        for node in workflow.values()
+        if isinstance(node, dict)
+        and isinstance(node.get("inputs"), dict)
+        and "negative" in node["inputs"]
+        and "cfg" in node["inputs"]
+    ]
+    if len(samplers) != 1:
+        return unknown
+    inputs = samplers[0]["inputs"]
+    try:
+        if float(inputs["cfg"]) <= 1.0:
+            return {"used": False, "default": "", "why": f"cfg {float(inputs['cfg']):g}"}
+    except (TypeError, ValueError):
+        return unknown
+    ref = inputs["negative"]
+    for _ in range(len(workflow)):
+        if not (isinstance(ref, list) and ref and str(ref[0]) in workflow):
+            return unknown
+        node = workflow[str(ref[0])]
+        kind = str(node.get("class_type", ""))
+        node_inputs = node.get("inputs") or {}
+        if kind == _ZEROED:
+            return {"used": False, "default": "", "why": _ZEROED}
+        if isinstance(node_inputs.get("text"), str):
+            return {"used": True, "default": node_inputs["text"], "why": ""}
+        ref = node_inputs.get("negative", node_inputs.get("conditioning"))
+    return unknown
+
+
+def _prompt_workflow(spec: dict[str, str]) -> dict[str, Any] | None:
+    """The workflow a model's prompt settings are read from, or None if none can be.
+
+    **One form serves every route** (the caller's, and `COMMON_PARAMS` here), so
+    one workflow has to speak for them: text-to-image first, since it is the
+    route whose only input is the prompt.
+    """
+    for route in ("txt2img", "img2img", "controlnet"):
+        if spec[route]:
+            try:
+                return load_workflow(spec[route])
+            except (OSError, ValueError):
+                return None
+    return None
+
+
+def prompt_format(spec: dict[str, str], negative: dict[str, Any]) -> dict[str, Any]:
+    """How a model wants its prompt written, for a caller that writes one.
+
+    Args:
+        spec: `config.image_model_spec` for the model.
+        negative: `read_negative` of its workflow.
+
+    Returns:
+        `negative` always; `negative_why` when it is not read; `style` and
+        `max_words` only when `.env` declares them. **An undeclared style is
+        absent, not guessed**, so a caller can say that it is assuming one.
+
+    Raises:
+        ValueError: If a declared style or word limit is not one this knows.
+    """
+    out: dict[str, Any] = {"negative": bool(negative["used"])}
+    if not negative["used"]:
+        out["negative_why"] = negative["why"]
+    style = spec.get("prompt_style", "")
+    if style:
+        if style not in PROMPT_STYLES:
+            raise ValueError(f"unknown prompt style {style!r} (known: {sorted(PROMPT_STYLES)})")
+        out["style"] = style
+    words = spec.get("prompt_max_words", "")
+    if words:
+        try:
+            out["max_words"] = int(words)
+        except ValueError:
+            raise ValueError(f"prompt max words is not a whole number: {words!r}") from None
+        if out["max_words"] < 1:
+            raise ValueError(f"prompt max words must be at least 1, not {out['max_words']}")
+    return out
+
+
 def capabilities(name: str) -> dict[str, Any]:
     """What one image model can do, in the shape a runner answers in.
 
@@ -67,11 +180,14 @@ def capabilities(name: str) -> dict[str, Any]:
         name: An image model listed in `HEARTH_IMAGE_MODELS`.
 
     Returns:
-        `name` / `capabilities` / `params` / `route_params`, as in
-        `docs/runner_contract.md` §3.
+        `name` / `checkpoint` / `capabilities` / `params` / `route_params`, as in
+        `docs/runner_contract.md` §3, and `prompt_format` (`docs/protocol.md` §4).
+        **`negative`'s default is the text its workflow already carries**, so a
+        default written into the workflow is the one that runs.
 
     Raises:
-        ValueError: If the model was never declared.
+        ValueError: If the model was never declared, or its prompt settings are
+            not ones this knows.
     """
     spec = config.image_model_spec(name)
     able = {method: bool(spec[route]) for method, route in ROUTES.items()}
@@ -79,12 +195,17 @@ def capabilities(name: str) -> dict[str, Any]:
     # here keeps a caller from offering a route that fails on use.
     if able["sketch_to_image"] and not config.CONTROLNET_MODEL:
         able["sketch_to_image"] = False
+    workflow = _prompt_workflow(spec)
+    negative = read_negative(workflow) if workflow is not None else read_negative({})
+    params = {key: dict(value) for key, value in COMMON_PARAMS.items()}
+    params["negative"]["default"] = negative["default"]
     return {
         "name": name,
         "checkpoint": spec["checkpoint"],
         "capabilities": able,
-        "params": dict(COMMON_PARAMS),
+        "params": params,
         "route_params": {k: dict(v) for k, v in ROUTE_PARAMS.items() if able.get(k)},
+        "prompt_format": prompt_format(spec, negative),
     }
 
 
@@ -99,7 +220,9 @@ def all_capabilities() -> dict[str, dict[str, Any]]:
     return out
 
 
-def effective_params(method: str, params: dict[str, Any]) -> dict[str, Any]:
+def effective_params(
+    method: str, params: dict[str, Any], model: str | None = None
+) -> dict[str, Any]:
     """Fill the declared defaults in, and **reject what was never declared**.
 
     Returning the values that were actually used is what lets a caller offer
@@ -109,6 +232,8 @@ def effective_params(method: str, params: dict[str, Any]) -> dict[str, Any]:
     Args:
         method: One of `ROUTES`.
         params: What the caller sent, minus what hearth consumes itself.
+        model: The image model, whose own defaults are used (`capabilities`).
+            None uses the defaults every model shares.
 
     Returns:
         Every declared parameter with the value that will be used.
@@ -116,12 +241,12 @@ def effective_params(method: str, params: dict[str, Any]) -> dict[str, Any]:
     Raises:
         ValueError: If a parameter was never declared for this route.
     """
-    declared = {**COMMON_PARAMS, **ROUTE_PARAMS.get(method, {})}
+    common = capabilities(model)["params"] if model else COMMON_PARAMS
+    declared = {**common, **ROUTE_PARAMS.get(method, {})}
     unknown = set(params) - set(declared)
     if unknown:
         raise ValueError(
-            f"unknown parameters for {method}: {sorted(unknown)} "
-            f"(accepted: {sorted(declared)})"
+            f"unknown parameters for {method}: {sorted(unknown)} " f"(accepted: {sorted(declared)})"
         )
     return {key: params.get(key, spec["default"]) for key, spec in declared.items()}
 

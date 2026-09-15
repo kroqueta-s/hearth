@@ -228,6 +228,28 @@ doing three of those while a window is opening is felt.
 so one piece of code can build a form for both. A route the model does not have
 is `false` in its capability table (FLUX has no ControlNet here, for instance).
 
+**Each image model also says how it wants its prompt written**, as
+`prompt_format`, for a caller that writes one for a person:
+
+```json
+"prompt_format": {"negative": false, "negative_why": "cfg 1", "style": "natural", "max_words": 80}
+```
+
+| Field | Means | Where it comes from |
+|---|---|---|
+| `negative` | **Whether the sampler reads the negative prompt at all.** Always present | **Read out of the model's workflow**, not declared: false when the sampler's `cfg` is 1.0 or less, or when the negative input passes through `ConditioningZeroOut`. A workflow hearth cannot follow counts as true, which is what it did before anything looked |
+| `negative_why` | Why not, when `negative` is false | The same reading |
+| `style` | `tags` (comma-separated short phrases) or `natural` (plain sentences). **Absent when nothing declared it**: say that a style is being assumed rather than guessing one | `HEARTH_IMAGE_MODEL_<KEY>_PROMPT_STYLE` |
+| `max_words` | A word limit to write within. Absent when not declared | `HEARTH_IMAGE_MODEL_<KEY>_PROMPT_MAX_WORDS` |
+
+**A negative prompt the model does not read is still accepted**, so a caller that
+sends one is not refused; it simply changes nothing, and a form should say so
+rather than offer the field as if it did. **The default of `negative` in
+`params` is the text the workflow already carries**, so a default written into a
+workflow is the one that runs when a caller sends none. `prompt_format` sits
+beside `params` rather than inside it, so adding it does not change the table a
+caller's form was built from.
+
 ### 4a. ComfyUI, and how full the card is
 
 **hearth starts ComfyUI and stops the one it started.** ComfyUI is still a

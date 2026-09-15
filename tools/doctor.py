@@ -183,6 +183,12 @@ def check_images(report: Report, hearth: Hearth) -> None:
         report.ok(name, f"can: {', '.join(able)}")
         if not caps.get("checkpoint"):
             report.warn(name, "no checkpoint declared")
+        fmt = caps.get("prompt_format") or {}
+        negative = "read" if fmt.get("negative") else f"ignored ({fmt.get('negative_why')})"
+        if fmt.get("style"):
+            report.ok(name, f"prompt: {fmt['style']}, negative {negative}")
+        else:
+            report.warn(name, f"no prompt style declared; negative {negative}")
         spec = config.image_model_spec(name)
         for route in ("txt2img", "img2img", "controlnet"):
             workflow = spec[route]

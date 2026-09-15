@@ -320,8 +320,12 @@ def _image(method: str, params: dict[str, Any], responder: Responder) -> dict[st
         ValueError: If a parameter was never declared for this route.
     """
     consumed = {"out_dir", "model", "image_model", _IMAGE_INPUT.get(method, "")}
-    used = imagegen.effective_params(method, {k: v for k, v in params.items() if k not in consumed})
     model = str(params.get("image_model") or config.DEFAULT_IMAGE_MODEL)
+    # **The model's own defaults**, so a negative prompt written into its workflow
+    # is the one that runs when the caller sends none.
+    used = imagegen.effective_params(
+        method, {k: v for k, v in params.items() if k not in consumed}, model
+    )
 
     run_dir = _run_dir(params)
     client = ComfyUIClient()

@@ -191,9 +191,10 @@ def image_model_spec(name: str) -> dict[str, str]:
         name: An image model listed in `HEARTH_IMAGE_MODELS`.
 
     Returns:
-        A dict of `checkpoint` / `txt2img` / `img2img` / `controlnet`.
+        A dict of `checkpoint` / `txt2img` / `img2img` / `controlnet`, plus
+        `prompt_style` and `prompt_max_words` (`imagegen.prompt_format`).
         **A route the model does not support is an empty string** (FLUX's
-        ControlNet, for one).
+        ControlNet, for one), and so is a prompt setting nobody declared.
 
     Raises:
         ValueError: If the name was never declared.
@@ -208,6 +209,10 @@ def image_model_spec(name: str) -> dict[str, str]:
         "txt2img": _str(f"HEARTH_IMAGE_MODEL_{key}_TXT2IMG"),
         "img2img": _str(f"HEARTH_IMAGE_MODEL_{key}_IMG2IMG"),
         "controlnet": _str(f"HEARTH_IMAGE_MODEL_{key}_CONTROLNET"),
+        # **How the model reads a prompt cannot be read out of its workflow**, so
+        # it is declared here; whether it reads a negative one can, and is not.
+        "prompt_style": _str(f"HEARTH_IMAGE_MODEL_{key}_PROMPT_STYLE"),
+        "prompt_max_words": _str(f"HEARTH_IMAGE_MODEL_{key}_PROMPT_MAX_WORDS"),
     }
 
 
