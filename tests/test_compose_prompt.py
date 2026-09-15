@@ -32,6 +32,9 @@ sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 import test_segment_mesh as shared  # noqa: E402
 
+#: Not ASCII, and built from code points so this file stays ASCII: the point is
+#: that a description in any language reaches the runner byte for byte.
+_TEXT = "".join(chr(c) for c in (0x93A7, 0x3092, 0x7740, 0x305F, 0x732B, 0x306E, 0x9A0E, 0x58EB))
 _FORMAT = {"style": "tags", "negative": False, "negative_why": "cfg 1", "max_words": 60}
 
 
@@ -65,7 +68,7 @@ def test_the_words_arrive_whole_and_the_format_is_passed_through() -> None:
                     "method": "compose_prompt",
                     "params": {
                         "model": "sleepy",
-                        "text": "鎧を着た猫の騎士",
+                        "text": _TEXT,
                         "format": _FORMAT,
                         "out_dir": str(out),
                         "seed": 5,
@@ -80,7 +83,7 @@ def test_the_words_arrive_whole_and_the_format_is_passed_through() -> None:
         result = answer["result"]
         assert result["model"] == "sleepy", result
         assert result["run_dir"] == str(out), result
-        assert result["prompt"] == "echo: 鎧を着た猫の騎士", result
+        assert result["prompt"] == f"echo: {_TEXT}", result
         assert result["format_used"] == _FORMAT, result
         assert result["negative"] == "", "the format said the model reads no negative"
         assert result["params_used"] == {"seed": 5}, result
