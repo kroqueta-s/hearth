@@ -15,6 +15,9 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: python -m compileall hearth tools tests templates
+      # **Whether a model reads its negative prompt is read out of its workflow**,
+      # so the answer cannot drift from the file that is edited.
+      - run: python tests/test_prompt_format.py
       # The rules that keep hearth a relay: no torch, no bpy, no model named in
       # code. There is no .env in CI, so that comparison skips itself.
       - run: python tests/test_config.py
