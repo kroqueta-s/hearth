@@ -289,31 +289,6 @@ def m_segment_mesh(params: dict[str, Any], responder: Responder) -> dict[str, An
     return {"run_dir": str(run_dir), "source_mesh": str(params["mesh_path"]), **result}
 
 
-def m_compose_prompt(params: dict[str, Any], responder: Responder) -> dict[str, Any]:
-    """A person's description to the prompt an image model is asked with. **Words only.**
-
-    **Only runners that say so support this** (`capabilities.compose_prompt`,
-    contract §5b). `format` is the image model's `prompt_format` (§4), and it is
-    the caller that puts it here: hearth joins nothing to anything, so which
-    image model the prompt is for is never a question this answers.
-
-    **ComfyUI is asked to free its models first**, as for every runner method: a
-    runner that runs its model on the card needs the room, and one that does not
-    loses nothing. The price is that an image model reloads after a prompt is
-    written, which is a number a caller can see rather than a spill it cannot.
-    """
-    model, passthrough = _split_params(params)
-    run_dir = _run_dir(params)
-    _free_comfy(responder)
-    result = MANAGER.generate(
-        model,
-        "compose_prompt",
-        {"out_dir": str(run_dir), **passthrough},
-        relay=responder.progress,
-    )
-    return {"run_dir": str(run_dir), **result}
-
-
 # --- Making an image ----------------------------------------------------------
 #
 # **The image is worth working on, not something to throw away.** Spending a
@@ -639,8 +614,6 @@ GPU_METHODS = {
     "texture_mesh": m_texture_mesh,
     # An existing mesh to a part label per face. **Not every runner generates**
     "segment_mesh": m_segment_mesh,
-    # A description to a prompt. **Its runner may hold the card**, so it queues
-    "compose_prompt": m_compose_prompt,
     # Proving a long job does not freeze anything
     "selftest_long_job": m_selftest_long_job,
 }
