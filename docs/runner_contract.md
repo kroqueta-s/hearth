@@ -44,8 +44,7 @@ One JSON object per line, UTF-8, over stdin and stdout.
 | `shutdown` | — | `{"bye": true}` | Exit |
 
 **Optional methods**, implemented only if `capabilities` declares them:
-`text_to_mesh`, `multi_image_to_mesh`, `texture_mesh`, `segment_mesh` (§5a),
-`compose_prompt` (§5b).
+`text_to_mesh`, `multi_image_to_mesh`, `texture_mesh`, `segment_mesh` (§5a).
 
 **`image_to_mesh` is required of a runner that generates meshes**, which is not
 every runner. One that only answers questions about a mesh it is given declares
@@ -233,55 +232,6 @@ and answers:
   one here (§5's axes are about a mesh result).
 - `peak_rss_mb` is worth reporting when the method is expensive in memory rather
   than in VRAM, which is the case for anything running on the CPU.
-
-## 5b. `compose_prompt`: a description in, a prompt out
-
-**The second runner that generates neither a mesh nor an image.** It writes the
-words an image model is asked with, from a description a person typed - in any
-language - for the format that image model reads. A runner that can declares
-`compose_prompt: true` and takes:
-
-| Argument | Required | Meaning |
-|---|:--:|---|
-| `text` | yes | The description, as typed |
-| `out_dir` | yes | **Absolute path** to record the exchange in. hearth makes one per run |
-| `format` | no | The image model's `prompt_format` ([protocol §4](protocol.md)): `style` (`tags` or `natural`), `negative` (whether the model reads one), `max_words`. **The caller passes it**; a runner never learns which image model it is for |
-| anything in `method_params.compose_prompt` | no | The runner's own settings |
-
-and answers:
-
-```json
-{
-  "prompt": "cat knight in plate armor, raising a sword above its head, full body, centered, plain white background",
-  "negative": "multiple characters, cropped, background scenery, text, watermark, blurry",
-  "conflicts": [],
-  "warnings": [],
-  "format_used": {"style": "tags", "negative": true, "max_words": 60},
-  "params_used": {"seed": 0, "temperature": 0.3},
-  "metrics": {"load_sec": 4.2, "gen_sec": 1.9, "tokens_in": 1310, "tokens_out": 88},
-  "record_path": "C:/.../out/compose_1.json"
-}
-```
-
-- **`prompt` and `negative` are English**, and `negative` is empty when `format`
-  says the model reads none: a negative prompt a model never sees is a field a
-  person edits for nothing.
-- **`conflicts` says what the runner gave up and why**, in one sentence each - a
-  description asking for a scene where the runner's own rules ask for one object
-  on a plain background, say. The person's words win; the answer says so.
-- **`warnings` are faults that do not stop the answer**: text still in the
-  description's language, or a prompt over `max_words`. **A prompt is never cut
-  short to fit**, since that drops words without saying which. What makes an
-  answer unusable - no prompt at all - is an error.
-- **`format_used` is `format` with every field filled**, and a style the caller
-  did not give is an assumption the runner states in `warnings`.
-- **`record_path` holds the whole exchange** - what was sent to the model and
-  what came back, word for word - so an odd prompt can be traced to its cause.
-- There is no `mesh_path` and no axis, for the same reason as §5a.
-
-**A runner whose model runs as a child process must take the child with it** when
-it ends, however it ends (§9, §10). Ending a runner that leaves its server holding
-the card is the orphan §10 exists to prevent, one process further down.
 
 **The face order is the runner's to preserve, and its to check.** Reading a mesh
 with a library that merges duplicate vertices by default, or writing it out

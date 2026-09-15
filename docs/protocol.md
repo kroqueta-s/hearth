@@ -119,7 +119,6 @@ weights are loaded by ComfyUI in its own process, watched through `status`.
 | `multi_image_to_mesh` | `model`, `image_paths` | A raw mesh from several views |
 | `texture_mesh` | `model`, `mesh_path`, `image_path` | A texture on a mesh you already have. **Its settings are the runner's `method_params.texture_mesh`**, not the ones `image_to_mesh` takes ([contract §3](runner_contract.md)) |
 | `segment_mesh` | `model`, `mesh_path` | Which part of a thing each face belongs to, for **every** number of parts at once ([contract §5a](runner_contract.md)). **It makes no mesh**: the answer is an `.npz` of labels plus the hash of the faces they are on, so a caller can refuse a labelling of some other mesh |
-| `compose_prompt` | `model`, `text`, `format` | **An English prompt and negative prompt, written from a description** in whatever language it was typed in ([contract §5b](runner_contract.md)). `format` is the image model's `prompt_format` (§4), passed by the caller: hearth joins the two models to nothing. **It makes no image**, and ComfyUI is asked to free its models first, as for every runner method |
 | `selftest_long_job` | `seconds`, `interval` | Nothing. **It occupies the GPU queue and reports progress**, which is how you test that your UI survives a long job without owning a GPU |
 
 Every method takes an optional **`out_dir`**: an absolute path to write into.
