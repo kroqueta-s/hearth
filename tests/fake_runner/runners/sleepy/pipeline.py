@@ -190,3 +190,31 @@ def segment_mesh(params: dict[str, Any], progress: Progress) -> dict[str, Any]:
         "peak_rss_mb": 0.0,
         "params_used": {"n_point_per_face": int(params.get("n_point_per_face", 100))},
     }
+
+
+def compose_prompt(params: dict[str, Any], progress: Progress) -> dict[str, Any]:
+    """Echo the description back as a prompt, without a language model.
+
+    **What reaches the runner is what is checked**: the text and the format a
+    caller sent, unchanged, and a directory. No file but the record is written.
+    """
+    out_dir = Path(str(params["out_dir"]))
+    allowed = {"seed"}
+    unknown = set(params) - allowed - {"text", "format", "out_dir"}
+    if unknown:
+        raise ValueError(f"unknown parameters: {sorted(unknown)} (accepted: {sorted(allowed)})")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    load(progress)
+    progress("compose", "writing the prompt")
+    fmt = dict(params.get("format") or {})
+    record = out_dir / "compose_1.json"
+    record.write_text("{}", encoding="utf-8")
+    return {
+        "prompt": f"echo: {params['text']}",
+        "negative": "blurry" if fmt.get("negative", True) else "",
+        "conflicts": [],
+        "warnings": [],
+        "format_used": fmt,
+        "params_used": {"seed": int(params.get("seed", 0))},
+        "record_path": str(record),
+    }

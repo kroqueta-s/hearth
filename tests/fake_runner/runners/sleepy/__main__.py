@@ -66,6 +66,9 @@ def m_capabilities(params: dict[str, Any], progress: Any) -> dict[str, Any]:
             # `SLEEPY_NO_SEGMENT` withdraws the declaration, which is how a
             # caller's refusal can be tested **without naming a model anywhere**.
             "segment_mesh": os.environ.get("SLEEPY_NO_SEGMENT", "0") != "1",
+            # **A method that answers with words** (contract §5b), withdrawn the
+            # same way, for the same reason.
+            "compose_prompt": os.environ.get("SLEEPY_NO_COMPOSE", "0") != "1",
         },
         "params": {
             "seconds": {"type": "float", "default": 1.0, "min": 0.0, "max": 600.0},
@@ -77,6 +80,7 @@ def m_capabilities(params: dict[str, Any], progress: Any) -> dict[str, Any]:
         "method_params": {
             "segment_mesh": {"n_point_per_face": {"type": "int", "default": 100,
                                                   "min": 20, "max": 1000}},
+            "compose_prompt": {"seed": {"type": "int", "default": 0, "min": 0}},
         },
         # The runner's own process id, so a test can check it is gone.
         "pid": os.getpid(),
@@ -119,12 +123,20 @@ def m_segment_mesh(params: dict[str, Any], progress: Any) -> dict[str, Any]:
     return pipeline.segment_mesh(params, progress)
 
 
+def m_compose_prompt(params: dict[str, Any], progress: Any) -> dict[str, Any]:
+    """A description to a prompt. **An optional method whose answer is words.**"""
+    from . import pipeline
+
+    return pipeline.compose_prompt(params, progress)
+
+
 METHODS = {
     "capabilities": m_capabilities,
     "load": m_load,
     "unload": m_unload,
     "image_to_mesh": m_image_to_mesh,
     "segment_mesh": m_segment_mesh,
+    "compose_prompt": m_compose_prompt,
 }
 
 
